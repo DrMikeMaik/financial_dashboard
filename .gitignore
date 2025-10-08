@@ -218,3 +218,4 @@ data/
 # Claude
 .agents/
 .claude/
+Claude.md
