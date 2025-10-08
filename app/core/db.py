@@ -45,8 +45,11 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
     # Accounts table
     conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_accounts_id START 1
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS accounts (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_accounts_id'),
             name VARCHAR NOT NULL,
             type VARCHAR NOT NULL,
             currency VARCHAR NOT NULL,
@@ -58,8 +61,11 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
     # Holdings table
     conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_holdings_id START 1
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS holdings (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_holdings_id'),
             asset_type VARCHAR NOT NULL CHECK (asset_type IN ('crypto', 'stock', 'etf', 'bond', 'cash')),
             symbol VARCHAR NOT NULL,
             name VARCHAR,
@@ -71,8 +77,11 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
     # Transactions table
     conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_transactions_id START 1
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_transactions_id'),
             holding_id INTEGER NOT NULL,
             account_id INTEGER,
             ts TIMESTAMP NOT NULL,
@@ -89,8 +98,11 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
     # Prices cache table
     conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_prices_id START 1
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS prices (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_prices_id'),
             holding_id INTEGER NOT NULL,
             ts TIMESTAMP NOT NULL,
             price DECIMAL(18, 8) NOT NULL,
@@ -103,8 +115,11 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
     # FX rates cache table
     conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_fx_rates_id START 1
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS fx_rates (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_fx_rates_id'),
             ts TIMESTAMP NOT NULL,
             base_ccy VARCHAR NOT NULL,
             quote_ccy VARCHAR NOT NULL,
@@ -117,8 +132,11 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
     # Bond metadata table
     conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_bond_meta_id START 1
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS bond_meta (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_bond_meta_id'),
             holding_id INTEGER NOT NULL UNIQUE,
             face DECIMAL(18, 8) NOT NULL,
             coupon_rate DECIMAL(8, 4) NOT NULL,
