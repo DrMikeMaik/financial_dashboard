@@ -1,0 +1,6 @@
+gradio>=4.38
+duckdb>=1.0.0
+pandas>=2.2
+yfinance>=0.2.40
+requests>=2.31
+python-dotenv>=1.0
