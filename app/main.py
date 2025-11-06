@@ -1,5 +1,6 @@
 """Main entry point for the financial dashboard."""
 from app.core.db import init_db, get_setting
+from app.ui import launch
 
 
 def main():
@@ -31,6 +32,11 @@ def main():
 
     conn.close()
     print("\n✓ Database initialized successfully!")
+
+    # Launch Gradio UI
+    print("\n🚀 Launching Gradio UI...")
+    print("Access the dashboard at: http://localhost:7860")
+    launch(share=False, server_port=7860)
 
 
 if __name__ == "__main__":
