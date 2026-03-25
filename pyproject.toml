@@ -1,0 +1,24 @@
+[project]
+name = "financial-dashboard"
+version = "0.1.0"
+description = "Local-only financial snapshot dashboard built with Gradio and DuckDB."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+authors = [
+    { name = "Mike" },
+]
+dependencies = [
+    "gradio>=4.38",
+    "duckdb>=1.0.0",
+    "pandas>=2.2",
+    "yfinance>=0.2.40",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[tool.poetry]
+package-mode = false
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

@@ -14,9 +14,13 @@ A minimal, local-only Gradio app to view a **current snapshot** of your finances
 
 ## Quickstart
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
-pip install -r requirements.txt
+poetry install
 
 # Run
-python -m app.main
+poetry run python -m app.main
+
+# Smoke tests
+poetry run python test_fx.py
+poetry run python test_crypto.py
+poetry run python test_stocks.py
+poetry run python test_portfolio.py
