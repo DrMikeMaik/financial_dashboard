@@ -8,7 +8,6 @@ from app.services import account_service, bond_service, dashboard_service, holdi
 
 ACCOUNT_TYPE_CHOICES = ["checking", "savings", "investment", "credit", "other"]
 TRANSACTION_ACTION_CHOICES = ["buy", "sell", "dividend", "transfer"]
-BOND_VALUATION_MODE_CHOICES = ["Unit price", "Percent of face"]
 
 
 def _dashboard_payload(limit) -> tuple:
@@ -31,10 +30,8 @@ def _reference_updates() -> tuple:
     )
 
 
-def _load_bond_form(bond_choice: str | None) -> tuple:
-    symbol, name, currency, face, coupon_rate, coupon_freq, maturity_date, issuer, status = bond_service.load_bond(bond_choice)
-    valuation_info = bond_service.get_bond_valuation_details(bond_choice)
-    return symbol, name, currency, face, coupon_rate, coupon_freq, maturity_date, issuer, status, valuation_info
+def _load_bond_context(bond_choice: str | None) -> str:
+    return bond_service.get_bond_valuation_details(bond_choice)
 
 
 def _clear_transaction_form() -> tuple:
@@ -56,8 +53,8 @@ def _clear_account_form() -> tuple:
     return None, "", None, "PLN", 0.0, True, ""
 
 
-def _clear_bond_form() -> tuple:
-    return None, "", "", "PLN", 100.0, 0.0, 1, "", "", "", "No bond selected."
+def _clear_bond_context() -> tuple:
+    return gr.update(value=None, choices=reference_service.list_bond_choices()), ""
 
 
 def create_ui():
@@ -99,47 +96,32 @@ def create_ui():
                 stock_output = gr.Textbox(label="Stock Result", interactive=False)
 
             with gr.Tab("Bonds"):
-                bonds_df = gr.DataFrame(label="Bond Holdings")
+                bonds_df = gr.DataFrame(label="Bonds")
 
-                gr.Markdown("### Bond Editor")
+                with gr.Row():
+                    quick_add_code = gr.Textbox(label="Series code (e.g. COI0528)", scale=3)
+                    quick_add_btn = gr.Button("Add Bond", variant="primary", scale=1)
+
                 bond_select = gr.Dropdown(
-                    label="Existing Bond",
+                    label="Select Bond",
                     choices=reference_service.list_bond_choices(),
                     value=None,
                 )
                 with gr.Row():
-                    bond_symbol = gr.Textbox(label="Symbol", scale=1)
-                    bond_name = gr.Textbox(label="Name", scale=2)
-                    bond_currency = gr.Textbox(label="Currency", value="PLN", scale=1)
-
+                    bond_purchase_qty = gr.Number(label="Qty", precision=0, minimum=1, scale=1)
+                    bond_purchase_date = gr.DateTime(label="Purchase Date", include_time=False, type="datetime", scale=1)
+                    bond_purchase_btn = gr.Button("Record Purchase", variant="primary", scale=1)
                 with gr.Row():
-                    bond_face = gr.Number(label="Face Value", value=100.0, scale=1)
-                    bond_coupon_rate = gr.Number(label="Coupon Rate (%)", value=0.0, scale=1)
-                    bond_coupon_freq = gr.Number(label="Coupons / Year", value=1, precision=0, scale=1)
-                    bond_maturity = gr.Textbox(label="Maturity Date (YYYY-MM-DD)", scale=1)
-
-                bond_issuer = gr.Textbox(label="Issuer")
+                    bond_valuation_value = gr.Number(label="Current value / bond (PLN)", minimum=0, scale=1)
+                    bond_valuation_btn = gr.Button("Update Value", variant="primary", scale=1)
                 with gr.Row():
-                    bond_save_btn = gr.Button("Save Bond", variant="primary")
+                    period_num_input = gr.Number(label="Period #", precision=0, minimum=1, scale=1)
+                    period_rate_input = gr.Number(label="Rate (%)", minimum=0, scale=1)
+                    period_rate_save_btn = gr.Button("Save Rate", scale=1)
+                with gr.Row():
                     bond_delete_btn = gr.Button("Delete Bond", variant="stop")
-                    bond_clear_btn = gr.Button("Clear")
 
-                bond_output = gr.Textbox(label="Bond Result", interactive=False)
-
-                gr.Markdown("### Manual Valuation")
-                with gr.Row():
-                    bond_valuation_mode = gr.Dropdown(
-                        label="Mode",
-                        choices=BOND_VALUATION_MODE_CHOICES,
-                        value="Unit price",
-                        scale=1,
-                    )
-                    bond_valuation_value = gr.Number(label="Value", scale=1)
-                    bond_valuation_ts = gr.Textbox(label="Timestamp (optional)", scale=2)
-
-                bond_valuation_btn = gr.Button("Save Manual Valuation")
-                bond_valuation_output = gr.Textbox(label="Valuation Result", interactive=False)
-                bond_valuation_info = gr.Markdown("No bond selected.")
+                bond_output = gr.Textbox(label="Result", interactive=False)
 
             with gr.Tab("Accounts"):
                 accounts_df = gr.DataFrame(label="Accounts")
@@ -281,39 +263,48 @@ def create_ui():
         )
 
         bond_select.change(
-            fn=_load_bond_form,
+            fn=_load_bond_context,
             inputs=bond_select,
-            outputs=[
-                bond_symbol,
-                bond_name,
-                bond_currency,
-                bond_face,
-                bond_coupon_rate,
-                bond_coupon_freq,
-                bond_maturity,
-                bond_issuer,
-                bond_output,
-                bond_valuation_info,
-            ],
+            outputs=bond_output,
         )
 
-        bond_save_btn.click(
-            fn=bond_service.save_bond,
-            inputs=[
-                bond_select,
-                bond_symbol,
-                bond_name,
-                bond_currency,
-                bond_face,
-                bond_coupon_rate,
-                bond_coupon_freq,
-                bond_maturity,
-                bond_issuer,
-            ],
+        quick_add_btn.click(
+            fn=bond_service.save_bond_from_preset,
+            inputs=quick_add_code,
             outputs=bond_output,
         ).then(
             fn=_reference_updates,
             outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        bond_purchase_btn.click(
+            fn=bond_service.record_bond_purchase,
+            inputs=[bond_select, bond_purchase_qty, bond_purchase_date],
+            outputs=bond_output,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        bond_valuation_btn.click(
+            fn=bond_service.save_bond_valuation,
+            inputs=[bond_select, gr.State("Unit price"), bond_valuation_value, gr.State(None)],
+            outputs=bond_output,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        period_rate_save_btn.click(
+            fn=bond_service.save_period_rate,
+            inputs=[bond_select, period_num_input, period_rate_input],
+            outputs=bond_output,
         ).then(
             fn=_dashboard_payload,
             inputs=txn_limit,
@@ -325,39 +316,11 @@ def create_ui():
             inputs=bond_select,
             outputs=bond_output,
         ).then(
+            fn=_clear_bond_context,
+            outputs=[bond_select, bond_output],
+        ).then(
             fn=_reference_updates,
             outputs=refresh_reference_outputs,
-        ).then(
-            fn=_dashboard_payload,
-            inputs=txn_limit,
-            outputs=dashboard_outputs,
-        )
-
-        bond_clear_btn.click(
-            fn=_clear_bond_form,
-            outputs=[
-                bond_select,
-                bond_symbol,
-                bond_name,
-                bond_currency,
-                bond_face,
-                bond_coupon_rate,
-                bond_coupon_freq,
-                bond_maturity,
-                bond_issuer,
-                bond_output,
-                bond_valuation_info,
-            ],
-        )
-
-        bond_valuation_btn.click(
-            fn=bond_service.save_bond_valuation,
-            inputs=[bond_select, bond_valuation_mode, bond_valuation_value, bond_valuation_ts],
-            outputs=bond_valuation_output,
-        ).then(
-            fn=bond_service.get_bond_valuation_details,
-            inputs=bond_select,
-            outputs=bond_valuation_info,
         ).then(
             fn=_dashboard_payload,
             inputs=txn_limit,

@@ -85,8 +85,8 @@ def save_account(
     try:
         if account_id is None:
             conn.execute("""
-                INSERT INTO accounts (name, type, currency, balance, active)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO accounts (id, name, type, currency, balance, active)
+                VALUES (nextval('seq_accounts_id'), ?, ?, ?, ?, ?)
             """, [name.strip(), acc_type, currency.strip().upper(), balance_dec, active])
             conn.commit()
             return f"✓ Added account: {name.strip()}"

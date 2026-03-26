@@ -1,9 +1,11 @@
 """Regression coverage for the usable local MVP milestone."""
+from datetime import date
 from pathlib import Path
 from decimal import Decimal
 
 import duckdb
 
+from app.core.bonds import parse_series_code, POLISH_BOND_PRESETS
 from app.core.db import init_db
 from app.core.portfolio import calculate_positions, get_latest_price_info, get_portfolio_summary
 from app.services import account_service, bond_service, dashboard_service, holding_service, reference_service, transaction_service
@@ -165,14 +167,86 @@ def test_manual_bond_valuation():
 
     bond_rows = bond_service.get_bonds_df()
     assert not bond_rows.empty
-    assert bond_rows.iloc[0]["Source"] == "manual"
+    assert bond_rows.iloc[0]["Series"] == "EDO2030"
+    assert bond_rows.iloc[0]["Current (PLN)"] == "1,050.00"
 
     conn.close()
     print("   ✓ Bond metadata and manual valuation flow are correct.")
 
 
+def test_polish_bond_presets_and_period_rates():
+    print("4. Testing Polish bond presets and period rates...")
+    conn = fresh_db("test_mvp_presets.duckdb")
+
+    # parse_series_code
+    type_code, maturity = parse_series_code("COI0528")
+    assert type_code == "COI"
+    assert maturity == date(2028, 5, 1)
+
+    type_code, maturity = parse_series_code("EDO1131")
+    assert type_code == "EDO"
+    assert maturity == date(2031, 11, 1)
+
+    # invalid series codes
+    try:
+        parse_series_code("XYZ0101")
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+
+    # save_bond_from_preset
+    result = bond_service.save_bond_from_preset("COI0528")
+    assert result.startswith("✓")
+    assert "COI0528" in result
+
+    holding_id = conn.execute("""
+        SELECT id FROM holdings
+        WHERE asset_type = 'bond' AND symbol = 'COI0528'
+    """).fetchone()[0]
+
+    meta = conn.execute("""
+        SELECT face, bond_type, rate_type, series_code, maturity_date, issuer
+        FROM bond_meta WHERE holding_id = ?
+    """, [holding_id]).fetchone()
+    assert meta[0] == Decimal("100")
+    assert meta[1] == "COI"
+    assert meta[2] == "inflation"
+    assert meta[3] == "COI0528"
+    assert meta[4] == date(2028, 5, 1)
+    assert meta[5] == "Skarb Państwa"
+
+    # duplicate should fail
+    result = bond_service.save_bond_from_preset("COI0528")
+    assert "already exists" in result
+
+    # period rates
+    bond_choice = f"{holding_id} | COI0528"
+    result = bond_service.save_period_rate(bond_choice, 1, 5.75)
+    assert "Saved" in result
+    result = bond_service.save_period_rate(bond_choice, 2, 15.95)
+    assert "Saved" in result
+
+    rates_df = bond_service.get_period_rates_df(bond_choice)
+    assert len(rates_df) == 2
+    assert rates_df.iloc[0]["Period"] == 1
+
+    # upsert existing period
+    bond_service.save_period_rate(bond_choice, 1, 6.0)
+    rates_df = bond_service.get_period_rates_df(bond_choice)
+    assert len(rates_df) == 2
+    assert rates_df.iloc[0]["Rate (%)"] == "6.00"
+
+    # delete period rate
+    bond_service.delete_period_rate(bond_choice, 1)
+    rates_df = bond_service.get_period_rates_df(bond_choice)
+    assert len(rates_df) == 1
+
+    conn.close()
+    print("   ✓ Polish bond presets and period rates work correctly.")
+
+
 def test_dashboard_payload_smoke():
-    print("4. Testing dashboard payload smoke...")
+    print("5. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
@@ -188,6 +262,7 @@ def main():
     test_price_currency_and_cash_summary()
     test_transaction_crud_and_oversell_protection()
     test_manual_bond_valuation()
+    test_polish_bond_presets_and_period_rates()
     test_dashboard_payload_smoke()
     print("\n" + "=" * 50)
     print("✓ MVP regression test complete\n")

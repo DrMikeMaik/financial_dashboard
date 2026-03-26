@@ -69,11 +69,11 @@ def list_bond_choices() -> list[str]:
     conn = get_connection()
     try:
         rows = conn.execute("""
-            SELECT h.id, h.symbol, COALESCE(h.name, '')
+            SELECT h.id, h.symbol
             FROM holdings h
             WHERE h.asset_type = 'bond'
             ORDER BY h.symbol
         """).fetchall()
-        return [f"{row[0]} | {row[1]} | {row[2]}".rstrip() for row in rows]
+        return [f"{row[0]} | {row[1]}" for row in rows]
     finally:
         conn.close()

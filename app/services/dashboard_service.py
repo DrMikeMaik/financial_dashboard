@@ -33,8 +33,8 @@ def refresh_market_data() -> str:
                 if currency == "PLN":
                     continue
                 conn.execute("""
-                    INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
-                    VALUES (?, ?, 'PLN', ?, 'NBP')
+                    INSERT INTO fx_rates (id, ts, base_ccy, quote_ccy, rate, source)
+                    VALUES (nextval('seq_fx_rates_id'), ?, ?, 'PLN', ?, 'NBP')
                 """, [now, currency, float(rate)])
             messages.append(f"✓ Updated {len(fx_rates)} FX rates from NBP")
         except Exception as exc:
@@ -53,8 +53,8 @@ def refresh_market_data() -> str:
                     if price is None:
                         continue
                     conn.execute("""
-                        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
-                        VALUES (?, ?, ?, 'USD', 'CoinGecko')
+                        INSERT INTO prices (id, holding_id, ts, price, price_ccy, source)
+                        VALUES (nextval('seq_prices_id'), ?, ?, ?, 'USD', 'CoinGecko')
                     """, [holding_id, now, float(price)])
                 messages.append(f"✓ Updated {len(prices)} crypto prices from CoinGecko")
             except Exception as exc:
@@ -71,8 +71,8 @@ def refresh_market_data() -> str:
                         stock_errors.append(symbol)
                         continue
                     conn.execute("""
-                        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
-                        VALUES (?, ?, ?, ?, 'yfinance')
+                        INSERT INTO prices (id, holding_id, ts, price, price_ccy, source)
+                        VALUES (nextval('seq_prices_id'), ?, ?, ?, ?, 'yfinance')
                     """, [holding_id, now, float(price), currency])
                     updated += 1
                 except Exception:

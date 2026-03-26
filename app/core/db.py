@@ -152,8 +152,35 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
             coupon_freq INTEGER NOT NULL,
             maturity_date DATE NOT NULL,
             issuer VARCHAR,
+            bond_type VARCHAR,
+            rate_type VARCHAR,
+            series_code VARCHAR,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (holding_id) REFERENCES holdings(id)
+        )
+    """)
+
+    # Migration: add new columns to existing bond_meta tables
+    for col in ("bond_type VARCHAR", "rate_type VARCHAR", "series_code VARCHAR"):
+        try:
+            conn.execute(f"ALTER TABLE bond_meta ADD COLUMN {col}")
+        except duckdb.CatalogException:
+            pass
+
+
+    # Bond period interest rates table
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_bond_period_rates_id START 1
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bond_period_rates (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_bond_period_rates_id'),
+            bond_meta_id INTEGER NOT NULL,
+            period_num INTEGER NOT NULL,
+            rate DECIMAL(8, 4) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (bond_meta_id) REFERENCES bond_meta(id),
+            UNIQUE(bond_meta_id, period_num)
         )
     """)
 
