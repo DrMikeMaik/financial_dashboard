@@ -48,8 +48,6 @@ def _clear_account_form() -> tuple:
     return None, "", None, "PLN", 0.0, True, ""
 
 
-def _refresh_bond_select() -> dict:
-    return gr.update(value=None, choices=bond_service.list_bond_choices())
 
 
 def create_ui():
@@ -91,6 +89,7 @@ def create_ui():
                 stock_output = gr.Textbox(label="Stock Result", interactive=False)
 
             with gr.Tab("Bonds"):
+                bond_ids_state = gr.State([])
                 bonds_df = gr.DataFrame(label="Bonds")
 
                 with gr.Row():
@@ -99,10 +98,6 @@ def create_ui():
                     bond_date = gr.DateTime(label="Purchase Date", include_time=False, type="datetime", scale=1)
                     bond_rate = gr.Number(label="Rate (%)", minimum=0, scale=1)
                     bond_add_btn = gr.Button("Add Bond", variant="primary", scale=1)
-
-                with gr.Row():
-                    bond_select = gr.Dropdown(label="Delete bond", choices=bond_service.list_bond_choices(), allow_custom_value=True, value=None, scale=3)
-                    bond_delete_btn = gr.Button("Delete", variant="stop", scale=1)
 
                 bond_output = gr.Textbox(label="Result", interactive=False)
 
@@ -188,6 +183,7 @@ def create_ui():
             crypto_df,
             stocks_df,
             bonds_df,
+            bond_ids_state,
             accounts_df,
             txn_df,
             settings_md,
@@ -249,21 +245,23 @@ def create_ui():
             inputs=[bond_series, bond_qty, bond_date, bond_rate],
             outputs=bond_output,
         ).then(
-            fn=_refresh_bond_select,
-            outputs=bond_select,
-        ).then(
             fn=_dashboard_payload,
             inputs=txn_limit,
             outputs=dashboard_outputs,
         )
 
-        bond_delete_btn.click(
-            fn=bond_service.delete_bond,
-            inputs=bond_select,
+        def _handle_bond_table_click(evt: gr.SelectData, bond_ids):
+            if evt.value != "🗑️":
+                return gr.skip()
+            row = evt.index[0]
+            if row >= len(bond_ids):
+                return gr.skip()
+            return bond_service.delete_bond_by_id(bond_ids[row])
+
+        bonds_df.select(
+            fn=_handle_bond_table_click,
+            inputs=bond_ids_state,
             outputs=bond_output,
-        ).then(
-            fn=_refresh_bond_select,
-            outputs=bond_select,
         ).then(
             fn=_dashboard_payload,
             inputs=txn_limit,

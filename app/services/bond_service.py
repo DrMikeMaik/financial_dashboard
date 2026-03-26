@@ -11,28 +11,32 @@ from app.core.db import get_connection
 FACE_VALUE = Decimal("100")
 
 
-def get_bonds_df() -> pd.DataFrame:
-    cols = ["Series", "Qty", "Nominal (PLN)", "Date", "Rate (%)", "Maturity"]
+def get_bonds_df() -> tuple[pd.DataFrame, list[int]]:
+    """Returns (dataframe, list_of_bond_ids) — IDs correspond to data rows (not the total row)."""
+    cols = ["", "Series", "Qty", "Nominal (PLN)", "Date", "Rate (%)", "Maturity"]
     conn = get_connection()
     try:
         rows = conn.execute("""
-            SELECT series, qty, purchase_date, rate, maturity
+            SELECT id, series, qty, purchase_date, rate, maturity
             FROM bonds ORDER BY series, purchase_date
         """).fetchall()
 
         if not rows:
-            return pd.DataFrame(columns=cols)
+            return pd.DataFrame(columns=cols), []
 
         total_qty = 0
         total_nominal = Decimal("0")
         data = []
+        bond_ids = []
 
-        for series, qty, purchase_date, rate, maturity in rows:
+        for bond_id, series, qty, purchase_date, rate, maturity in rows:
             nominal = qty * FACE_VALUE
             total_qty += qty
             total_nominal += nominal
+            bond_ids.append(bond_id)
 
             data.append({
+                "": "🗑️",
                 "Series": series,
                 "Qty": qty,
                 "Nominal (PLN)": f"{nominal:,.2f}",
@@ -42,6 +46,7 @@ def get_bonds_df() -> pd.DataFrame:
             })
 
         data.append({
+            "": "",
             "Series": "Total",
             "Qty": total_qty,
             "Nominal (PLN)": f"{total_nominal:,.2f}",
@@ -50,20 +55,10 @@ def get_bonds_df() -> pd.DataFrame:
             "Maturity": "",
         })
 
-        return pd.DataFrame(data)
+        return pd.DataFrame(data), bond_ids
     finally:
         conn.close()
 
-
-def list_bond_choices() -> list[str]:
-    conn = get_connection()
-    try:
-        rows = conn.execute("""
-            SELECT id, series, purchase_date FROM bonds ORDER BY series, purchase_date
-        """).fetchall()
-        return [f"{r[0]} | {r[1]} ({r[2]})" for r in rows]
-    finally:
-        conn.close()
 
 
 def add_bond(series_code: str, qty, purchase_date, rate) -> str:
@@ -119,11 +114,7 @@ def add_bond(series_code: str, qty, purchase_date, rate) -> str:
         conn.close()
 
 
-def delete_bond(bond_choice: str | None) -> str:
-    bond_id = _parse_choice(bond_choice)
-    if bond_id is None:
-        return "✗ Select a bond."
-
+def delete_bond_by_id(bond_id: int) -> str:
     conn = get_connection()
     try:
         conn.execute("DELETE FROM bonds WHERE id = ?", [bond_id])
@@ -145,7 +136,3 @@ def get_bonds_total() -> Decimal:
         conn.close()
 
 
-def _parse_choice(choice: str | None) -> int | None:
-    if not choice:
-        return None
-    return int(str(choice).split("|", 1)[0].strip())

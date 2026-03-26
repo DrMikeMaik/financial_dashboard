@@ -155,8 +155,9 @@ def test_bonds_simple_ledger():
     assert result.startswith("✓")
 
     # table shows both rows + total
-    df = bond_service.get_bonds_df()
+    df, ids = bond_service.get_bonds_df()
     assert len(df) == 3  # 2 rows + total
+    assert len(ids) == 2
     assert df.iloc[0]["Series"] == "COI0528"
     assert df.iloc[2]["Series"] == "Total"
 
@@ -165,11 +166,12 @@ def test_bonds_simple_ledger():
     assert total == Decimal("8000")  # (50 + 30) * 100
 
     # delete
-    choices = bond_service.list_bond_choices()
-    assert len(choices) == 2
-    result = bond_service.delete_bond(choices[1])
+    _, ids = bond_service.get_bonds_df()
+    assert len(ids) == 2
+    result = bond_service.delete_bond_by_id(ids[1])
     assert result.startswith("✓")
-    assert len(bond_service.list_bond_choices()) == 1
+    _, ids = bond_service.get_bonds_df()
+    assert len(ids) == 1
 
     # validation: future date rejected
     result = bond_service.add_bond("EDO1131", 10, datetime(2099, 1, 1), 5)
@@ -189,7 +191,7 @@ def test_dashboard_payload_smoke():
     conn.close()
 
     payload = dashboard_service.get_dashboard_payload(25)
-    assert len(payload) == 9
+    assert len(payload) == 10
     assert isinstance(payload[0], str)
     print("   ✓ Dashboard payload stays stable for the UI.")
 

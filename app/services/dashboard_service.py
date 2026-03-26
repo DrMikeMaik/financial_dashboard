@@ -194,13 +194,15 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
 def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "") -> tuple:
     """Return all dashboard outputs used by the top-level refresh."""
     overview_md, positions_df = get_overview_data()
+    bonds_dataframe, bonds_ids = get_bonds_df()
     return (
         refresh_status,
         overview_md,
         positions_df,
         get_crypto_holdings_df(),
         get_stock_holdings_df(),
-        get_bonds_df(),
+        bonds_dataframe,
+        bonds_ids,
         get_accounts_df(),
         get_transactions_df(transaction_limit),
         get_settings_markdown(),
