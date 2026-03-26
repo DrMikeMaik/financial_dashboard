@@ -13,7 +13,7 @@ FACE_VALUE = Decimal("100")
 
 def get_bonds_df() -> tuple[pd.DataFrame, list[int]]:
     """Returns (dataframe, list_of_bond_ids) — IDs correspond to data rows (not the total row)."""
-    cols = ["", "Series", "Qty", "Nominal (PLN)", "Date", "Rate (%)", "Maturity"]
+    cols = ["Series", "Qty", "Nominal (PLN)", "Date", "Rate (%)", "Maturity", "Delete"]
     conn = get_connection()
     try:
         rows = conn.execute("""
@@ -36,23 +36,23 @@ def get_bonds_df() -> tuple[pd.DataFrame, list[int]]:
             bond_ids.append(bond_id)
 
             data.append({
-                "": "🗑️",
                 "Series": series,
                 "Qty": qty,
                 "Nominal (PLN)": f"{nominal:,.2f}",
                 "Date": str(purchase_date),
                 "Rate (%)": f"{Decimal(str(rate)):.2f}" if rate else "",
                 "Maturity": str(maturity) if maturity else "",
+                "Delete": "🗑️",
             })
 
         data.append({
-            "": "",
             "Series": "Total",
             "Qty": total_qty,
             "Nominal (PLN)": f"{total_nominal:,.2f}",
             "Date": "",
             "Rate (%)": "",
             "Maturity": "",
+            "Delete": "",
         })
 
         return pd.DataFrame(data), bond_ids

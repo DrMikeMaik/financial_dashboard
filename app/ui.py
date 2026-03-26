@@ -96,7 +96,7 @@ def create_ui():
                     bond_series = gr.Textbox(label="Series (e.g. COI0528)", scale=2)
                     bond_qty = gr.Number(label="Qty", precision=0, minimum=1, scale=1)
                     bond_date = gr.DateTime(label="Purchase Date", include_time=False, type="datetime", scale=1)
-                    bond_rate = gr.Number(label="Rate (%)", minimum=0, scale=1)
+                    bond_rate = gr.Number(label="Rate (%)", minimum=0, precision=2, step=0.01, scale=1)
                     bond_add_btn = gr.Button("Add Bond", variant="primary", scale=1)
 
                 bond_output = gr.Textbox(label="Result", interactive=False)
