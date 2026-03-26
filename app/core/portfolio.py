@@ -1,7 +1,7 @@
 """Portfolio position calculations with FIFO cost basis."""
 import duckdb
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Tuple
 from app.core.models import Position, Holding, Transaction, TransactionAction
 
@@ -107,17 +107,30 @@ def _calculate_holding_position(conn: duckdb.DuckDBPyConnection, holding: Holdin
     total_cost = sum(q * c for q, c in fifo_queue)
     avg_cost = total_cost / total_qty
 
-    # Get latest price for this holding
-    latest_price = _get_latest_price(conn, holding.id, holding.currency)
+    valuation_warnings: List[str] = []
+
+    # Get latest price for this holding and preserve the cached price currency.
+    latest_price, price_ccy, price_source, price_ts = get_latest_price_info(conn, holding.id)
     if latest_price is None:
-        latest_price = avg_cost  # Fallback to cost basis if no price available
+        latest_price = avg_cost
+        price_ccy = holding.currency
+        price_source = "cost_basis"
+        valuation_warnings.append("Using cost basis because no cached market price is available.")
 
     value_native = total_qty * latest_price
 
-    # Get FX rate to PLN
-    fx_rate = _get_fx_rate(conn, holding.currency, "PLN")
-    value_pln = value_native * fx_rate
-    cost_pln = total_cost * fx_rate
+    # Value and cost may be denominated in different currencies.
+    value_fx_rate, value_fx_found, _, _ = get_fx_rate_info(conn, price_ccy, "PLN")
+    cost_fx_rate, cost_fx_found, _, _ = get_fx_rate_info(conn, holding.currency, "PLN")
+
+    if price_ccy != "PLN" and not value_fx_found:
+        valuation_warnings.append(f"Missing FX rate for {price_ccy}/PLN; using 1.0 fallback.")
+
+    if holding.currency != "PLN" and not cost_fx_found:
+        valuation_warnings.append(f"Missing FX rate for {holding.currency}/PLN cost conversion; using 1.0 fallback.")
+
+    value_pln = value_native * value_fx_rate
+    cost_pln = total_cost * cost_fx_rate
     unrealized_pl = value_pln - cost_pln
 
     return Position(
@@ -125,33 +138,47 @@ def _calculate_holding_position(conn: duckdb.DuckDBPyConnection, holding: Holdin
         qty=total_qty,
         avg_cost=avg_cost,
         current_price=latest_price,
+        current_price_ccy=price_ccy,
         value_native=value_native,
         value_pln=value_pln,
-        unrealized_pl=unrealized_pl
+        unrealized_pl=unrealized_pl,
+        price_source=price_source,
+        price_ts=price_ts,
+        valuation_warning=" ".join(valuation_warnings) if valuation_warnings else None,
     )
 
 
-def _get_latest_price(conn: duckdb.DuckDBPyConnection, holding_id: int, currency: str) -> Decimal | None:
+def get_latest_price_info(
+    conn: duckdb.DuckDBPyConnection,
+    holding_id: int,
+) -> Tuple[Decimal | None, str | None, str | None, datetime | None]:
     """Get the most recent cached price for a holding."""
     result = conn.execute("""
-        SELECT price
+        SELECT price, price_ccy, source, ts
         FROM prices
         WHERE holding_id = ?
         ORDER BY ts DESC
         LIMIT 1
     """, [holding_id]).fetchone()
 
-    return Decimal(str(result[0])) if result else None
+    if not result:
+        return None, None, None, None
+
+    return Decimal(str(result[0])), result[1], result[2], result[3]
 
 
-def _get_fx_rate(conn: duckdb.DuckDBPyConnection, from_ccy: str, to_ccy: str) -> Decimal:
-    """Get latest FX rate. Returns 1.0 if same currency or not found."""
+def get_fx_rate_info(
+    conn: duckdb.DuckDBPyConnection,
+    from_ccy: str,
+    to_ccy: str,
+) -> Tuple[Decimal, bool, str | None, datetime | None]:
+    """Get latest FX rate details. Returns 1.0 when currencies match or rate is missing."""
     if from_ccy == to_ccy:
-        return Decimal("1.0")
+        return Decimal("1.0"), True, "identity", None
 
     # Look for direct rate
     result = conn.execute("""
-        SELECT rate
+        SELECT rate, source, ts
         FROM fx_rates
         WHERE base_ccy = ? AND quote_ccy = ?
         ORDER BY ts DESC
@@ -159,11 +186,11 @@ def _get_fx_rate(conn: duckdb.DuckDBPyConnection, from_ccy: str, to_ccy: str) ->
     """, [from_ccy, to_ccy]).fetchone()
 
     if result:
-        return Decimal(str(result[0]))
+        return Decimal(str(result[0])), True, result[1], result[2]
 
     # Try inverse rate
     result = conn.execute("""
-        SELECT rate
+        SELECT rate, source, ts
         FROM fx_rates
         WHERE base_ccy = ? AND quote_ccy = ?
         ORDER BY ts DESC
@@ -171,10 +198,54 @@ def _get_fx_rate(conn: duckdb.DuckDBPyConnection, from_ccy: str, to_ccy: str) ->
     """, [to_ccy, from_ccy]).fetchone()
 
     if result:
-        return Decimal("1.0") / Decimal(str(result[0]))
+        return Decimal("1.0") / Decimal(str(result[0])), True, result[1], result[2]
 
     # Not found, return 1.0 as fallback
-    return Decimal("1.0")
+    return Decimal("1.0"), False, None, None
+
+
+def get_portfolio_warnings(
+    conn: duckdb.DuckDBPyConnection,
+    stale_after_hours: int = 24,
+) -> List[str]:
+    """Collect dashboard warnings for stale or missing cached market data."""
+    warnings: List[str] = []
+    stale_cutoff = datetime.now() - timedelta(hours=stale_after_hours)
+
+    missing_price_rows = conn.execute("""
+        SELECT h.symbol
+        FROM holdings h
+        WHERE h.asset_type IN ('crypto', 'stock', 'etf', 'bond')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM prices p
+              WHERE p.holding_id = h.id
+          )
+        ORDER BY h.symbol
+    """).fetchall()
+
+    if missing_price_rows:
+        missing_symbols = ", ".join(row[0] for row in missing_price_rows[:6])
+        warnings.append(f"Missing cached prices for: {missing_symbols}.")
+
+    stale_price_rows = conn.execute("""
+        SELECT h.symbol, latest.ts
+        FROM holdings h
+        JOIN (
+            SELECT holding_id, MAX(ts) AS ts
+            FROM prices
+            GROUP BY holding_id
+        ) latest ON latest.holding_id = h.id
+        WHERE h.asset_type IN ('crypto', 'stock', 'etf', 'bond')
+          AND latest.ts < ?
+        ORDER BY latest.ts ASC, h.symbol
+    """, [stale_cutoff]).fetchall()
+
+    if stale_price_rows:
+        stale_symbols = ", ".join(row[0] for row in stale_price_rows[:6])
+        warnings.append(f"Stale cached prices older than {stale_after_hours}h: {stale_symbols}.")
+
+    return warnings
 
 
 def get_portfolio_summary(conn: duckdb.DuckDBPyConnection) -> Dict:
@@ -187,22 +258,41 @@ def get_portfolio_summary(conn: duckdb.DuckDBPyConnection) -> Dict:
 
     total_value = sum(p.value_pln for p in positions)
     total_unrealized_pl = sum(p.unrealized_pl for p in positions)
+    warnings = get_portfolio_warnings(conn)
 
-    # Get total cash from accounts
-    cash_result = conn.execute("""
-        SELECT COALESCE(SUM(balance), 0)
+    for position in positions:
+        if position.valuation_warning:
+            warnings.append(f"{position.holding.symbol}: {position.valuation_warning}")
+
+    # Get total cash from accounts and convert each account currency to PLN.
+    cash_rows = conn.execute("""
+        SELECT currency, COALESCE(SUM(balance), 0)
         FROM accounts
         WHERE active = TRUE
-    """).fetchone()
+        GROUP BY currency
+        ORDER BY currency
+    """).fetchall()
 
-    total_cash = Decimal(str(cash_result[0])) if cash_result else Decimal("0")
+    total_cash = Decimal("0")
+    for currency, balance in cash_rows:
+        balance_dec = Decimal(str(balance))
+        fx_rate, found, _, _ = get_fx_rate_info(conn, currency, "PLN")
+        if currency != "PLN" and not found:
+            warnings.append(f"Missing FX rate for cash account currency {currency}/PLN; using 1.0 fallback.")
+        total_cash += balance_dec * fx_rate
 
     # Net worth = holdings value + cash
     net_worth = total_value + total_cash
+
+    latest_price_ts = conn.execute("SELECT MAX(ts) FROM prices").fetchone()[0]
+    latest_fx_ts = conn.execute("SELECT MAX(ts) FROM fx_rates").fetchone()[0]
 
     return {
         "net_worth": net_worth,
         "holdings_value": total_value,
         "unrealized_pl": total_unrealized_pl,
         "cash": total_cash,
+        "warnings": list(dict.fromkeys(warnings)),
+        "latest_price_ts": latest_price_ts,
+        "latest_fx_ts": latest_fx_ts,
     }

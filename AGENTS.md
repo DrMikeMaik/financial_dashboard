@@ -51,8 +51,9 @@ poetry run python test_portfolio.py # Test FIFO calculations
   - `export.py` - ⏳ TODO: CSV/Parquet export from DuckDB
 
 - **`app/ui/`** - Gradio interface
-  - ⏳ TODO: Tab-based layout (Overview, Crypto, Stocks/ETFs, Bonds, Accounts, Transactions, Settings)
-  - ⏳ TODO: Single **Refresh** button triggers all data fetches (no background jobs)
+  - ✅ Tab-based layout (Overview, Crypto, Stocks/ETFs, Bonds, Accounts, Transactions, Settings)
+  - ✅ Single **Refresh** button triggers all data fetches and updates all visible tables
+  - ✅ Manual CRUD for transactions, accounts, and bond metadata/valuations
 
 ### DuckDB Schema
 
@@ -87,26 +88,26 @@ All tables use sequences for auto-incrementing IDs. Database stored at `data/por
 
 ## Current Status
 
-**Completed (Session 1 - Oct 8, 2024):**
+**Completed**
 - ✅ Database schema with DuckDB (7 tables, all with auto-increment sequences)
-- ✅ Data models (dataclasses for all entities)
-- ✅ NBP FX adapter (fetches current and historical PLN rates from Tables A & B)
-- ✅ CoinGecko crypto adapter (current prices, historical, coin search)
-- ✅ yfinance stocks adapter (prices, info, historical, dividends, splits)
-- ✅ Portfolio FIFO engine (pooled cost basis, unrealized P/L calculations)
-- ✅ All adapters tested and working
+- ✅ Data models for holdings, transactions, FX, prices, bonds, and computed positions
+- ✅ NBP FX adapter, CoinGecko crypto adapter, and yfinance stock/ETF adapter
+- ✅ Gradio dashboard with overview, holdings, bonds, accounts, transactions, and settings tabs
+- ✅ Top-level refresh flow for FX and market prices
+- ✅ FIFO-based holdings valuation in PLN, honoring cached `price_ccy`
+- ✅ Multi-currency cash account conversion to PLN in portfolio summary
+- ✅ Transaction create/edit/delete workflow with oversell protection
+- ✅ Manual bond metadata editor and manual valuation flow stored through `prices`
 
-**Next Steps:**
-1. Build Gradio UI with tabs (Overview, Crypto, Stocks, Bonds, Accounts, Transactions, Settings)
-2. Wire up Refresh button to fetch prices/FX and update portfolio view
-3. Add transaction entry forms
-4. Implement CSV import/export
-5. Add bonds module for manual valuation
-6. Add ECB fallback for FX rates
+**Next Steps**
+1. Implement CSV import/export.
+2. Add ECB fallback for FX rates not covered by NBP.
+3. Improve analytics and presentation once the manual workflow is stable.
 
 ## Notes for Next Session
 
 - Test scripts are in root directory (`test_*.py`) - these demonstrate adapter usage
+- `test_mvp.py` covers the daily-use MVP regressions
 - Database schema uses sequences (`seq_*_id`) for auto-increment - don't specify IDs in INSERT statements
 - FIFO calculation is in `portfolio.py:_calculate_holding_position()` - handles buy/sell with fees
 - All prices and FX rates are cached in DuckDB with timestamps

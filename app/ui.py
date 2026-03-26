@@ -1,595 +1,452 @@
 """Gradio UI for the Financial Dashboard."""
+from datetime import datetime
+
 import gradio as gr
-import duckdb
-import pandas as pd
-from datetime import datetime, date
-from decimal import Decimal
-from typing import List
-
-from app.core.db import get_connection, get_setting, set_setting
-from app.core.portfolio import calculate_positions, get_portfolio_summary
-from app.core.models import AssetType, TransactionAction
-from app.adapters import crypto_coingecko, stocks_yfinance, fx_nbp
-
-
-# Global database connection
-conn = None
-
-
-def get_conn():
-    """
-    Get a database connection.
-    Each call returns a new connection to avoid threading issues.
-    Schema must be initialized before calling this (via init_db in main.py).
-    """
-    return get_connection()
-
-
-def refresh_prices():
-    """Refresh all asset prices from external APIs."""
-    conn = get_conn()
-    try:
-        messages = []
-
-        # Get all holdings that need price updates
-        holdings = conn.execute("""
-            SELECT id, asset_type, symbol, currency
-            FROM holdings
-            ORDER BY asset_type, symbol
-        """).fetchall()
-
-        if not holdings:
-            return "No holdings found to refresh."
-
-        # Fetch FX rates first
-        try:
-            fx_rates = fx_nbp.get_current_rates("PLN")
-            now = datetime.now()
-
-            for ccy, rate in fx_rates.items():
-                if ccy != "PLN":
-                    conn.execute("""
-                        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, [now, ccy, "PLN", float(rate), "NBP"])
-
-            messages.append(f"✓ Updated {len(fx_rates)} FX rates from NBP")
-        except Exception as e:
-            messages.append(f"⚠ FX rates update failed: {str(e)}")
-
-        # Group holdings by asset type
-        crypto_symbols = []
-        stock_symbols = []
-
-        for holding_id, asset_type, symbol, currency in holdings:
-            if asset_type == "crypto":
-                crypto_symbols.append((holding_id, symbol, currency))
-            elif asset_type in ["stock", "etf"]:
-                stock_symbols.append((holding_id, symbol, currency))
-
-        # Fetch crypto prices
-        if crypto_symbols:
-            try:
-                symbols = [s[1] for s in crypto_symbols]
-                prices = crypto_coingecko.get_current_prices(symbols, vs_currency="usd")
-
-                now = datetime.now()
-                for holding_id, symbol, currency in crypto_symbols:
-                    if symbol.upper() in prices:
-                        price = prices[symbol.upper()]
-                        conn.execute("""
-                            INSERT INTO prices (holding_id, ts, price, price_ccy, source)
-                            VALUES (?, ?, ?, ?, ?)
-                        """, [holding_id, now, float(price), "USD", "CoinGecko"])
-
-                messages.append(f"✓ Updated {len(prices)} crypto prices from CoinGecko")
-            except Exception as e:
-                messages.append(f"⚠ Crypto prices update failed: {str(e)}")
-
-        # Fetch stock prices
-        if stock_symbols:
-            try:
-                updated = 0
-                now = datetime.now()
-
-                for holding_id, symbol, currency in stock_symbols:
-                    price = stocks_yfinance.get_current_price(symbol)
-                    if price:
-                        conn.execute("""
-                            INSERT INTO prices (holding_id, ts, price, price_ccy, source)
-                            VALUES (?, ?, ?, ?, ?)
-                        """, [holding_id, now, float(price), currency, "yfinance"])
-                        updated += 1
-
-                messages.append(f"✓ Updated {updated} stock prices from yfinance")
-            except Exception as e:
-                messages.append(f"⚠ Stock prices update failed: {str(e)}")
-
-        conn.commit()
-        return "\n".join(messages)
-    finally:
-        conn.close()
-
-
-def get_overview_data():
-    """Get portfolio overview data."""
-    conn = get_conn()
-    try:
-        # Get portfolio summary
-        summary = get_portfolio_summary(conn)
-
-        # Format summary
-        summary_text = f"""
-## Portfolio Summary
-
-**Net Worth:** {summary['net_worth']:,.2f} PLN
-**Holdings Value:** {summary['holdings_value']:,.2f} PLN
-**Cash:** {summary['cash']:,.2f} PLN
-**Unrealized P/L:** {summary['unrealized_pl']:,.2f} PLN
-"""
-
-        # Get positions by asset type
-        positions = calculate_positions(conn)
-
-        if not positions:
-            return summary_text, pd.DataFrame()
-
-        # Create DataFrame for positions
-        positions_data = []
-        for pos in positions:
-            positions_data.append({
-                "Asset Type": pos.holding.asset_type.upper(),
-                "Symbol": pos.holding.symbol,
-                "Name": pos.holding.name or "",
-                "Quantity": f"{pos.qty:.8f}",
-                "Avg Cost": f"{pos.avg_cost:.2f} {pos.holding.currency}",
-                "Current Price": f"{pos.current_price:.2f} {pos.holding.currency}",
-                "Value (PLN)": f"{pos.value_pln:,.2f}",
-                "Unrealized P/L": f"{pos.unrealized_pl:,.2f}",
-            })
-
-        df = pd.DataFrame(positions_data)
-
-        return summary_text, df
-    finally:
-        conn.close()
-
-
-def get_crypto_holdings():
-    """Get all crypto holdings."""
-    conn = get_conn()
-    try:
-        positions = calculate_positions(conn)
-        crypto_positions = [p for p in positions if p.holding.asset_type == "crypto"]
-
-        if not crypto_positions:
-            return pd.DataFrame(columns=["Symbol", "Name", "Quantity", "Avg Cost", "Current Price", "Value (PLN)", "Unrealized P/L"])
-
-        data = []
-        for pos in crypto_positions:
-            data.append({
-                "Symbol": pos.holding.symbol,
-                "Name": pos.holding.name or "",
-                "Quantity": f"{pos.qty:.8f}",
-                "Avg Cost": f"{pos.avg_cost:.2f} {pos.holding.currency}",
-                "Current Price": f"{pos.current_price:.2f} {pos.holding.currency}",
-                "Value (PLN)": f"{pos.value_pln:,.2f}",
-                "Unrealized P/L": f"{pos.unrealized_pl:,.2f}",
-            })
-
-        return pd.DataFrame(data)
-    finally:
-        conn.close()
-
-
-def get_stock_holdings():
-    """Get all stock/ETF holdings."""
-    conn = get_conn()
-    try:
-        positions = calculate_positions(conn)
-        stock_positions = [p for p in positions if p.holding.asset_type in ["stock", "etf"]]
-
-        if not stock_positions:
-            return pd.DataFrame(columns=["Symbol", "Name", "Quantity", "Avg Cost", "Current Price", "Value (PLN)", "Unrealized P/L"])
-
-        data = []
-        for pos in stock_positions:
-            data.append({
-                "Symbol": pos.holding.symbol,
-                "Name": pos.holding.name or "",
-                "Quantity": f"{pos.qty:.8f}",
-                "Avg Cost": f"{pos.avg_cost:.2f} {pos.holding.currency}",
-                "Current Price": f"{pos.current_price:.2f} {pos.holding.currency}",
-                "Value (PLN)": f"{pos.value_pln:,.2f}",
-                "Unrealized P/L": f"{pos.unrealized_pl:,.2f}",
-            })
-
-        return pd.DataFrame(data)
-    finally:
-        conn.close()
-
-
-def get_bond_holdings():
-    """Get all bond holdings."""
-    conn = get_conn()
-    try:
-        # Get bonds with metadata
-        bonds = conn.execute("""
-            SELECT
-                h.symbol, h.name, h.currency,
-                b.face, b.coupon_rate, b.coupon_freq, b.maturity_date, b.issuer
-            FROM holdings h
-            JOIN bond_meta b ON h.id = b.holding_id
-            WHERE h.asset_type = 'bond'
-            ORDER BY b.maturity_date
-        """).fetchall()
-
-        if not bonds:
-            return pd.DataFrame(columns=["Symbol", "Name", "Face Value", "Coupon Rate", "Frequency", "Maturity", "Issuer"])
-
-        data = []
-        for bond in bonds:
-            symbol, name, currency, face, coupon_rate, coupon_freq, maturity, issuer = bond
-            data.append({
-                "Symbol": symbol,
-                "Name": name or "",
-                "Face Value": f"{face:.2f} {currency}",
-                "Coupon Rate": f"{coupon_rate:.2f}%",
-                "Frequency": f"{coupon_freq}x/year",
-                "Maturity": str(maturity),
-                "Issuer": issuer or "",
-            })
-
-        return pd.DataFrame(data)
-    finally:
-        conn.close()
-
-
-def get_accounts():
-    """Get all accounts."""
-    conn = get_conn()
-    try:
-        accounts = conn.execute("""
-            SELECT name, type, currency, balance, active
-            FROM accounts
-            ORDER BY name
-        """).fetchall()
-
-        if not accounts:
-            return pd.DataFrame(columns=["Name", "Type", "Currency", "Balance", "Active"])
-
-        data = []
-        for acc in accounts:
-            name, acc_type, currency, balance, active = acc
-            data.append({
-                "Name": name,
-                "Type": acc_type,
-                "Currency": currency,
-                "Balance": f"{balance:,.2f}",
-                "Active": "✓" if active else "✗",
-            })
-
-        return pd.DataFrame(data)
-    finally:
-        conn.close()
-
-
-def get_transactions(limit=50):
-    """Get recent transactions."""
-    conn = get_conn()
-    try:
-        txns = conn.execute(f"""
-            SELECT
-                t.ts, h.symbol, h.asset_type, t.action,
-                t.qty, t.price, t.fee, a.name as account, t.note
-            FROM transactions t
-            JOIN holdings h ON t.holding_id = h.id
-            LEFT JOIN accounts a ON t.account_id = a.id
-            ORDER BY t.ts DESC
-            LIMIT {limit}
-        """).fetchall()
-
-        if not txns:
-            return pd.DataFrame(columns=["Date", "Symbol", "Type", "Action", "Quantity", "Price", "Fee", "Account", "Note"])
-
-        data = []
-        for txn in txns:
-            ts, symbol, asset_type, action, qty, price, fee, account, note = txn
-            data.append({
-                "Date": str(ts),
-                "Symbol": symbol,
-                "Type": asset_type,
-                "Action": action,
-                "Quantity": f"{qty:.8f}" if qty else "",
-                "Price": f"{price:.2f}" if price else "",
-                "Fee": f"{fee:.2f}" if fee else "0.00",
-                "Account": account or "",
-                "Note": note or "",
-            })
-
-        return pd.DataFrame(data)
-    finally:
-        conn.close()
-
-
-def add_crypto_holding(symbol, name, currency="USD"):
-    """Add a new crypto holding."""
-    conn = get_conn()
-    try:
-        conn.execute("""
-            INSERT INTO holdings (asset_type, symbol, name, currency)
-            VALUES (?, ?, ?, ?)
-        """, ["crypto", symbol.upper(), name, currency.upper()])
-        conn.commit()
-        return f"✓ Added crypto holding: {symbol.upper()}"
-    except Exception as e:
-        return f"✗ Error: {str(e)}"
-    finally:
-        conn.close()
-
-
-def add_stock_holding(symbol, currency="USD"):
-    """Add a new stock/ETF holding."""
-    conn = get_conn()
-    try:
-        # Try to get info from yfinance
-        info = stocks_yfinance.get_info(symbol)
-        name = info.get("name", symbol)
-        detected_currency = info.get("currency", currency)
-        asset_type = "etf" if info.get("type") == "ETF" else "stock"
-
-        conn.execute("""
-            INSERT INTO holdings (asset_type, symbol, name, currency)
-            VALUES (?, ?, ?, ?)
-        """, [asset_type, symbol.upper(), name, detected_currency])
-        conn.commit()
-        return f"✓ Added {asset_type} holding: {symbol.upper()} ({name})"
-    except Exception as e:
-        return f"✗ Error: {str(e)}"
-    finally:
-        conn.close()
-
-
-def add_transaction(symbol, action, quantity, price, fee=0, note=""):
-    """Add a new transaction."""
-    conn = get_conn()
-    try:
-        # Get holding ID
-        holding = conn.execute("""
-            SELECT id FROM holdings WHERE symbol = ?
-        """, [symbol.upper()]).fetchone()
-
-        if not holding:
-            return f"✗ Holding not found: {symbol}"
-
-        holding_id = holding[0]
-
-        conn.execute("""
-            INSERT INTO transactions (holding_id, ts, action, qty, price, fee, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, [holding_id, datetime.now(), action, quantity, price, fee, note])
-        conn.commit()
-
-        return f"✓ Added {action} transaction for {symbol.upper()}"
-    except Exception as e:
-        return f"✗ Error: {str(e)}"
-    finally:
-        conn.close()
-
-
-def add_account(name, acc_type, currency, balance=0):
-    """Add a new account."""
-    conn = get_conn()
-    try:
-        conn.execute("""
-            INSERT INTO accounts (name, type, currency, balance)
-            VALUES (?, ?, ?, ?)
-        """, [name, acc_type, currency.upper(), balance])
-        conn.commit()
-        return f"✓ Added account: {name}"
-    except Exception as e:
-        return f"✗ Error: {str(e)}"
-    finally:
-        conn.close()
-
-
-def get_settings_info():
-    """Get current settings."""
-    conn = get_conn()
-    try:
-        base_currency = get_setting(conn, "base_currency")
-        cost_basis = get_setting(conn, "cost_basis")
-
-        return f"""
-## Current Settings
-
-**Base Currency:** {base_currency}
-**Cost Basis Method:** {cost_basis}
-
-### Database Info
-- **Location:** `data/portfolio.duckdb`
-- **Initialized:** ✓
-"""
-    finally:
-        conn.close()
+
+from app.services import account_service, bond_service, dashboard_service, holding_service, reference_service, transaction_service
+
+
+ACCOUNT_TYPE_CHOICES = ["checking", "savings", "investment", "credit", "other"]
+TRANSACTION_ACTION_CHOICES = ["buy", "sell", "dividend", "transfer"]
+BOND_VALUATION_MODE_CHOICES = ["Unit price", "Percent of face"]
+
+
+def _dashboard_payload(limit) -> tuple:
+    limit = int(limit or 50)
+    return dashboard_service.get_dashboard_payload(limit)
+
+
+def _refresh_dashboard(limit) -> tuple:
+    limit = int(limit or 50)
+    return dashboard_service.refresh_and_get_dashboard(limit)
+
+
+def _reference_updates() -> tuple:
+    return (
+        gr.update(choices=reference_service.list_transaction_choices(), value=None),
+        gr.update(choices=reference_service.list_holding_symbols(), value=None),
+        gr.update(choices=reference_service.list_account_names(), value=None),
+        gr.update(choices=reference_service.list_account_choices(), value=None),
+        gr.update(choices=reference_service.list_bond_choices(), value=None),
+    )
+
+
+def _load_bond_form(bond_choice: str | None) -> tuple:
+    symbol, name, currency, face, coupon_rate, coupon_freq, maturity_date, issuer, status = bond_service.load_bond(bond_choice)
+    valuation_info = bond_service.get_bond_valuation_details(bond_choice)
+    return symbol, name, currency, face, coupon_rate, coupon_freq, maturity_date, issuer, status, valuation_info
+
+
+def _clear_transaction_form() -> tuple:
+    return (
+        None,
+        datetime.now().replace(microsecond=0).isoformat(sep=" "),
+        None,
+        None,
+        "buy",
+        None,
+        None,
+        0.0,
+        "",
+        "",
+    )
+
+
+def _clear_account_form() -> tuple:
+    return None, "", None, "PLN", 0.0, True, ""
+
+
+def _clear_bond_form() -> tuple:
+    return None, "", "", "PLN", 100.0, 0.0, 1, "", "", "", "No bond selected."
 
 
 def create_ui():
     """Create and configure the Gradio interface."""
-
-    with gr.Blocks(title="Financial Dashboard", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="Financial Dashboard") as demo:
         gr.Markdown("# 💰 Financial Dashboard")
-        gr.Markdown("A minimal, local-only snapshot of your finances in PLN")
+        gr.Markdown("A local, PLN-first snapshot of your finances.")
 
-        # Refresh button at the top
         with gr.Row():
-            refresh_btn = gr.Button("🔄 Refresh Prices", variant="primary", size="sm")
-            refresh_output = gr.Textbox(label="Refresh Status", lines=3, interactive=False)
+            refresh_btn = gr.Button("Refresh Prices", variant="primary", size="sm")
+            refresh_output = gr.Textbox(label="Refresh Status", lines=4, interactive=False)
 
-        refresh_btn.click(fn=refresh_prices, outputs=refresh_output)
-
-        # Tabs
         with gr.Tabs():
-            # Overview Tab
-            with gr.Tab("📊 Overview"):
-                with gr.Row():
-                    with gr.Column():
-                        overview_refresh_btn = gr.Button("🔄 Refresh Overview", size="sm")
-
+            with gr.Tab("Overview"):
                 summary_md = gr.Markdown()
                 positions_df = gr.DataFrame(label="All Positions")
 
-                overview_refresh_btn.click(
-                    fn=get_overview_data,
-                    outputs=[summary_md, positions_df]
-                )
-
-                # Load on startup
-                demo.load(fn=get_overview_data, outputs=[summary_md, positions_df])
-
-            # Crypto Tab
-            with gr.Tab("₿ Crypto"):
-                with gr.Row():
-                    crypto_refresh_btn = gr.Button("🔄 Refresh", size="sm")
-
+            with gr.Tab("Crypto"):
                 crypto_df = gr.DataFrame(label="Crypto Holdings")
 
-                gr.Markdown("### Add New Crypto Holding")
+                gr.Markdown("### Add Crypto Holding")
                 with gr.Row():
-                    crypto_symbol = gr.Textbox(label="Symbol (e.g., BTC)", scale=1)
+                    crypto_symbol = gr.Textbox(label="Symbol", scale=1)
                     crypto_name = gr.Textbox(label="Name", scale=2)
                     crypto_currency = gr.Textbox(label="Currency", value="USD", scale=1)
 
-                crypto_add_btn = gr.Button("Add Crypto Holding")
-                crypto_add_output = gr.Textbox(label="Result", interactive=False)
+                crypto_save_btn = gr.Button("Save Crypto Holding")
+                crypto_output = gr.Textbox(label="Crypto Result", interactive=False)
 
-                crypto_refresh_btn.click(fn=get_crypto_holdings, outputs=crypto_df)
-                crypto_add_btn.click(
-                    fn=add_crypto_holding,
-                    inputs=[crypto_symbol, crypto_name, crypto_currency],
-                    outputs=crypto_add_output
-                ).then(fn=get_crypto_holdings, outputs=crypto_df)
+            with gr.Tab("Stocks & ETFs"):
+                stocks_df = gr.DataFrame(label="Stock & ETF Holdings")
 
-                demo.load(fn=get_crypto_holdings, outputs=crypto_df)
-
-            # Stocks Tab
-            with gr.Tab("📈 Stocks & ETFs"):
+                gr.Markdown("### Add Stock / ETF Holding")
                 with gr.Row():
-                    stocks_refresh_btn = gr.Button("🔄 Refresh", size="sm")
+                    stock_symbol = gr.Textbox(label="Symbol", scale=2)
+                    stock_currency = gr.Textbox(label="Currency Override", value="USD", scale=1)
 
-                stocks_df = gr.DataFrame(label="Stock Holdings")
+                stock_save_btn = gr.Button("Save Stock / ETF Holding")
+                stock_output = gr.Textbox(label="Stock Result", interactive=False)
 
-                gr.Markdown("### Add New Stock/ETF Holding")
-                with gr.Row():
-                    stock_symbol = gr.Textbox(label="Symbol (e.g., AAPL)", scale=2)
-                    stock_currency = gr.Textbox(label="Currency (optional)", value="USD", scale=1)
-
-                stock_add_btn = gr.Button("Add Stock/ETF Holding")
-                stock_add_output = gr.Textbox(label="Result", interactive=False)
-
-                stocks_refresh_btn.click(fn=get_stock_holdings, outputs=stocks_df)
-                stock_add_btn.click(
-                    fn=add_stock_holding,
-                    inputs=[stock_symbol, stock_currency],
-                    outputs=stock_add_output
-                ).then(fn=get_stock_holdings, outputs=stocks_df)
-
-                demo.load(fn=get_stock_holdings, outputs=stocks_df)
-
-            # Bonds Tab
-            with gr.Tab("🏦 Bonds"):
-                with gr.Row():
-                    bonds_refresh_btn = gr.Button("🔄 Refresh", size="sm")
-
+            with gr.Tab("Bonds"):
                 bonds_df = gr.DataFrame(label="Bond Holdings")
 
-                gr.Markdown("### Bond Management")
-                gr.Markdown("*Bond management UI coming soon. Bonds must be added directly to the database.*")
-
-                bonds_refresh_btn.click(fn=get_bond_holdings, outputs=bonds_df)
-                demo.load(fn=get_bond_holdings, outputs=bonds_df)
-
-            # Accounts Tab
-            with gr.Tab("💳 Accounts"):
+                gr.Markdown("### Bond Editor")
+                bond_select = gr.Dropdown(
+                    label="Existing Bond",
+                    choices=reference_service.list_bond_choices(),
+                    value=None,
+                )
                 with gr.Row():
-                    accounts_refresh_btn = gr.Button("🔄 Refresh", size="sm")
+                    bond_symbol = gr.Textbox(label="Symbol", scale=1)
+                    bond_name = gr.Textbox(label="Name", scale=2)
+                    bond_currency = gr.Textbox(label="Currency", value="PLN", scale=1)
 
+                with gr.Row():
+                    bond_face = gr.Number(label="Face Value", value=100.0, scale=1)
+                    bond_coupon_rate = gr.Number(label="Coupon Rate (%)", value=0.0, scale=1)
+                    bond_coupon_freq = gr.Number(label="Coupons / Year", value=1, precision=0, scale=1)
+                    bond_maturity = gr.Textbox(label="Maturity Date (YYYY-MM-DD)", scale=1)
+
+                bond_issuer = gr.Textbox(label="Issuer")
+                with gr.Row():
+                    bond_save_btn = gr.Button("Save Bond", variant="primary")
+                    bond_delete_btn = gr.Button("Delete Bond", variant="stop")
+                    bond_clear_btn = gr.Button("Clear")
+
+                bond_output = gr.Textbox(label="Bond Result", interactive=False)
+
+                gr.Markdown("### Manual Valuation")
+                with gr.Row():
+                    bond_valuation_mode = gr.Dropdown(
+                        label="Mode",
+                        choices=BOND_VALUATION_MODE_CHOICES,
+                        value="Unit price",
+                        scale=1,
+                    )
+                    bond_valuation_value = gr.Number(label="Value", scale=1)
+                    bond_valuation_ts = gr.Textbox(label="Timestamp (optional)", scale=2)
+
+                bond_valuation_btn = gr.Button("Save Manual Valuation")
+                bond_valuation_output = gr.Textbox(label="Valuation Result", interactive=False)
+                bond_valuation_info = gr.Markdown("No bond selected.")
+
+            with gr.Tab("Accounts"):
                 accounts_df = gr.DataFrame(label="Accounts")
 
-                gr.Markdown("### Add New Account")
+                gr.Markdown("### Account Editor")
+                account_select = gr.Dropdown(
+                    label="Existing Account",
+                    choices=reference_service.list_account_choices(),
+                    value=None,
+                )
                 with gr.Row():
                     acc_name = gr.Textbox(label="Name", scale=2)
-                    acc_type = gr.Dropdown(
-                        label="Type",
-                        choices=["checking", "savings", "investment", "credit", "other"],
-                        scale=1
-                    )
+                    acc_type = gr.Dropdown(label="Type", choices=ACCOUNT_TYPE_CHOICES, value=None, scale=1)
                     acc_currency = gr.Textbox(label="Currency", value="PLN", scale=1)
-                    acc_balance = gr.Number(label="Initial Balance", value=0, scale=1)
+                    acc_balance = gr.Number(label="Balance", value=0.0, scale=1)
+                acc_active = gr.Checkbox(label="Active", value=True)
 
-                acc_add_btn = gr.Button("Add Account")
-                acc_add_output = gr.Textbox(label="Result", interactive=False)
-
-                accounts_refresh_btn.click(fn=get_accounts, outputs=accounts_df)
-                acc_add_btn.click(
-                    fn=add_account,
-                    inputs=[acc_name, acc_type, acc_currency, acc_balance],
-                    outputs=acc_add_output
-                ).then(fn=get_accounts, outputs=accounts_df)
-
-                demo.load(fn=get_accounts, outputs=accounts_df)
-
-            # Transactions Tab
-            with gr.Tab("📝 Transactions"):
                 with gr.Row():
-                    txn_refresh_btn = gr.Button("🔄 Refresh", size="sm")
-                    txn_limit = gr.Slider(label="Show last N transactions", minimum=10, maximum=200, value=50, step=10)
+                    acc_save_btn = gr.Button("Save Account", variant="primary")
+                    acc_delete_btn = gr.Button("Delete Account", variant="stop")
+                    acc_clear_btn = gr.Button("Clear")
 
+                acc_output = gr.Textbox(label="Account Result", interactive=False)
+
+            with gr.Tab("Transactions"):
+                txn_limit = gr.Slider(label="Show last N transactions", minimum=10, maximum=200, value=50, step=10)
                 txn_df = gr.DataFrame(label="Recent Transactions")
 
-                gr.Markdown("### Add New Transaction")
+                gr.Markdown("### Transaction Editor")
+                tx_select = gr.Dropdown(
+                    label="Existing Transaction",
+                    choices=reference_service.list_transaction_choices(),
+                    value=None,
+                )
                 with gr.Row():
-                    txn_symbol = gr.Textbox(label="Symbol", scale=1)
+                    txn_ts = gr.Textbox(
+                        label="Timestamp",
+                        value=datetime.now().replace(microsecond=0).isoformat(sep=" "),
+                        scale=2,
+                    )
+                    txn_symbol = gr.Dropdown(
+                        label="Holding Symbol",
+                        choices=reference_service.list_holding_symbols(),
+                        value=None,
+                        scale=1,
+                    )
+                    txn_account = gr.Dropdown(
+                        label="Account",
+                        choices=reference_service.list_account_names(),
+                        value=None,
+                        scale=1,
+                    )
+
+                with gr.Row():
                     txn_action = gr.Dropdown(
                         label="Action",
-                        choices=["buy", "sell", "dividend", "transfer"],
-                        scale=1
+                        choices=TRANSACTION_ACTION_CHOICES,
+                        value="buy",
+                        scale=1,
                     )
                     txn_qty = gr.Number(label="Quantity", scale=1)
-                    txn_price = gr.Number(label="Price", scale=1)
-                    txn_fee = gr.Number(label="Fee", value=0, scale=1)
+                    txn_price = gr.Number(label="Price / Amount", scale=1)
+                    txn_fee = gr.Number(label="Fee", value=0.0, scale=1)
 
-                txn_note = gr.Textbox(label="Note (optional)")
-                txn_add_btn = gr.Button("Add Transaction")
-                txn_add_output = gr.Textbox(label="Result", interactive=False)
-
-                txn_refresh_btn.click(fn=get_transactions, inputs=txn_limit, outputs=txn_df)
-                txn_limit.change(fn=get_transactions, inputs=txn_limit, outputs=txn_df)
-                txn_add_btn.click(
-                    fn=add_transaction,
-                    inputs=[txn_symbol, txn_action, txn_qty, txn_price, txn_fee, txn_note],
-                    outputs=txn_add_output
-                ).then(fn=get_transactions, inputs=txn_limit, outputs=txn_df)
-
-                demo.load(fn=get_transactions, outputs=txn_df)
-
-            # Settings Tab
-            with gr.Tab("⚙️ Settings"):
-                settings_md = gr.Markdown()
-
-                gr.Markdown("### Database Management")
+                txn_note = gr.Textbox(label="Note")
                 with gr.Row():
-                    gr.Button("Export to CSV", size="sm", variant="secondary")
-                    gr.Button("Export to Parquet", size="sm", variant="secondary")
+                    txn_save_btn = gr.Button("Save Transaction", variant="primary")
+                    txn_delete_btn = gr.Button("Delete Transaction", variant="stop")
+                    txn_clear_btn = gr.Button("Clear")
 
-                gr.Markdown("*Export functionality coming soon*")
+                txn_output = gr.Textbox(label="Transaction Result", interactive=False)
 
-                demo.load(fn=get_settings_info, outputs=settings_md)
+            with gr.Tab("Settings"):
+                settings_md = gr.Markdown()
+                gr.Markdown("*CSV export, import tooling, and ECB fallback remain deferred until the manual MVP is solid.*")
+
+        dashboard_outputs = [
+            refresh_output,
+            summary_md,
+            positions_df,
+            crypto_df,
+            stocks_df,
+            bonds_df,
+            accounts_df,
+            txn_df,
+            settings_md,
+        ]
+
+        refresh_reference_outputs = [
+            tx_select,
+            txn_symbol,
+            txn_account,
+            account_select,
+            bond_select,
+        ]
+
+        refresh_btn.click(
+            fn=_refresh_dashboard,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        demo.load(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        txn_limit.change(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        crypto_save_btn.click(
+            fn=holding_service.add_crypto_holding,
+            inputs=[crypto_symbol, crypto_name, crypto_currency],
+            outputs=crypto_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        stock_save_btn.click(
+            fn=holding_service.add_stock_holding,
+            inputs=[stock_symbol, stock_currency],
+            outputs=stock_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        bond_select.change(
+            fn=_load_bond_form,
+            inputs=bond_select,
+            outputs=[
+                bond_symbol,
+                bond_name,
+                bond_currency,
+                bond_face,
+                bond_coupon_rate,
+                bond_coupon_freq,
+                bond_maturity,
+                bond_issuer,
+                bond_output,
+                bond_valuation_info,
+            ],
+        )
+
+        bond_save_btn.click(
+            fn=bond_service.save_bond,
+            inputs=[
+                bond_select,
+                bond_symbol,
+                bond_name,
+                bond_currency,
+                bond_face,
+                bond_coupon_rate,
+                bond_coupon_freq,
+                bond_maturity,
+                bond_issuer,
+            ],
+            outputs=bond_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        bond_delete_btn.click(
+            fn=bond_service.delete_bond,
+            inputs=bond_select,
+            outputs=bond_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        bond_clear_btn.click(
+            fn=_clear_bond_form,
+            outputs=[
+                bond_select,
+                bond_symbol,
+                bond_name,
+                bond_currency,
+                bond_face,
+                bond_coupon_rate,
+                bond_coupon_freq,
+                bond_maturity,
+                bond_issuer,
+                bond_output,
+                bond_valuation_info,
+            ],
+        )
+
+        bond_valuation_btn.click(
+            fn=bond_service.save_bond_valuation,
+            inputs=[bond_select, bond_valuation_mode, bond_valuation_value, bond_valuation_ts],
+            outputs=bond_valuation_output,
+        ).then(
+            fn=bond_service.get_bond_valuation_details,
+            inputs=bond_select,
+            outputs=bond_valuation_info,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        account_select.change(
+            fn=account_service.load_account,
+            inputs=account_select,
+            outputs=[acc_name, acc_type, acc_currency, acc_balance, acc_active, acc_output],
+        )
+
+        acc_save_btn.click(
+            fn=account_service.save_account,
+            inputs=[account_select, acc_name, acc_type, acc_currency, acc_balance, acc_active],
+            outputs=acc_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        acc_delete_btn.click(
+            fn=account_service.delete_account,
+            inputs=account_select,
+            outputs=acc_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        acc_clear_btn.click(
+            fn=_clear_account_form,
+            outputs=[account_select, acc_name, acc_type, acc_currency, acc_balance, acc_active, acc_output],
+        )
+
+        tx_select.change(
+            fn=transaction_service.load_transaction,
+            inputs=tx_select,
+            outputs=[txn_ts, txn_symbol, txn_account, txn_action, txn_qty, txn_price, txn_fee, txn_note, txn_output],
+        )
+
+        txn_save_btn.click(
+            fn=transaction_service.save_transaction,
+            inputs=[tx_select, txn_ts, txn_symbol, txn_account, txn_action, txn_qty, txn_price, txn_fee, txn_note],
+            outputs=txn_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        txn_delete_btn.click(
+            fn=transaction_service.delete_transaction,
+            inputs=tx_select,
+            outputs=txn_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        txn_clear_btn.click(
+            fn=_clear_transaction_form,
+            outputs=[tx_select, txn_ts, txn_symbol, txn_account, txn_action, txn_qty, txn_price, txn_fee, txn_note, txn_output],
+        )
 
     return demo
 
 
-def launch(share=False, server_port=7860):
+def launch(share: bool = False, server_port: int = 7860):
     """Launch the Gradio UI."""
     demo = create_ui()
-    demo.launch(share=share, server_port=server_port, server_name="0.0.0.0")
+    demo.launch(
+        share=share,
+        server_port=server_port,
+        server_name="0.0.0.0",
+        theme=gr.themes.Soft(),
+    )

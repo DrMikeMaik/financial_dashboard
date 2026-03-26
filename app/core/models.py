@@ -97,7 +97,11 @@ class Position:
     holding: Holding
     qty: Decimal
     avg_cost: Decimal  # in holding currency
-    current_price: Decimal  # in holding currency
-    value_native: Decimal  # in holding currency
+    current_price: Decimal  # in current_price_ccy
+    current_price_ccy: str
+    value_native: Decimal  # in current_price_ccy
     value_pln: Decimal
     unrealized_pl: Decimal  # in PLN
+    price_source: str | None = None
+    price_ts: datetime | None = None
+    valuation_warning: str | None = None
