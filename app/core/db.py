@@ -20,6 +20,15 @@ def init_db(db_path: str | None = None) -> duckdb.DuckDBPyConnection:
     return conn
 
 
+def get_connection(db_path: str | None = None) -> duckdb.DuckDBPyConnection:
+    """
+    Get a database connection without initializing schema.
+    Use this for regular queries after initial setup.
+    """
+    path = get_db_path(db_path)
+    return duckdb.connect(str(path))
+
+
 def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create all tables if they don't exist."""
 
