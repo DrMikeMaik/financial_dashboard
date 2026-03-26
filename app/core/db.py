@@ -184,6 +184,23 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
         )
     """)
 
+    # Standalone bonds table (simple ledger, no FK to holdings)
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_bonds_id START 1
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bonds (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_bonds_id'),
+            series VARCHAR NOT NULL,
+            qty INTEGER NOT NULL,
+            purchase_date DATE NOT NULL,
+            rate DECIMAL(8, 4) DEFAULT 0,
+            current_value DECIMAL(18, 8),
+            maturity DATE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
 
 

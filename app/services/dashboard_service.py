@@ -8,6 +8,7 @@ from app.adapters import crypto_coingecko, fx_nbp, stocks_yfinance
 from app.core.db import get_connection, get_setting
 from app.core.portfolio import calculate_positions, get_portfolio_summary
 from app.services.account_service import get_accounts_df
+from app.services import bond_service
 from app.services.bond_service import get_bonds_df
 from app.services.transaction_service import get_transactions_df
 
@@ -158,6 +159,9 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
     finally:
         conn.close()
 
+    bonds_total = bond_service.get_bonds_total()
+    net_worth = summary['net_worth'] + bonds_total
+
     warnings_md = ""
     if summary["warnings"]:
         warnings_md = "\n".join(f"- {warning}" for warning in summary["warnings"])
@@ -169,8 +173,9 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
     summary_text = f"""
 ## Portfolio Summary
 
-**Net Worth:** {summary['net_worth']:,.2f} PLN
+**Net Worth:** {net_worth:,.2f} PLN
 **Holdings Value:** {summary['holdings_value']:,.2f} PLN
+**Bonds:** {bonds_total:,.2f} PLN
 **Cash:** {summary['cash']:,.2f} PLN
 **Unrealized P/L:** {summary['unrealized_pl']:,.2f} PLN
 

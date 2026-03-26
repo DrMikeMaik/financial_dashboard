@@ -26,12 +26,7 @@ def _reference_updates() -> tuple:
         gr.update(choices=reference_service.list_holding_symbols(), value=None),
         gr.update(choices=reference_service.list_account_names(), value=None),
         gr.update(choices=reference_service.list_account_choices(), value=None),
-        gr.update(choices=reference_service.list_bond_choices(), value=None),
     )
-
-
-def _load_bond_context(bond_choice: str | None) -> str:
-    return bond_service.get_bond_valuation_details(bond_choice)
 
 
 def _clear_transaction_form() -> tuple:
@@ -53,8 +48,8 @@ def _clear_account_form() -> tuple:
     return None, "", None, "PLN", 0.0, True, ""
 
 
-def _clear_bond_context() -> tuple:
-    return gr.update(value=None, choices=reference_service.list_bond_choices()), ""
+def _refresh_bond_select() -> dict:
+    return gr.update(value=None, choices=bond_service.list_bond_choices())
 
 
 def create_ui():
@@ -99,27 +94,15 @@ def create_ui():
                 bonds_df = gr.DataFrame(label="Bonds")
 
                 with gr.Row():
-                    quick_add_code = gr.Textbox(label="Series code (e.g. COI0528)", scale=3)
-                    quick_add_btn = gr.Button("Add Bond", variant="primary", scale=1)
+                    bond_series = gr.Textbox(label="Series (e.g. COI0528)", scale=2)
+                    bond_qty = gr.Number(label="Qty", precision=0, minimum=1, scale=1)
+                    bond_date = gr.DateTime(label="Purchase Date", include_time=False, type="datetime", scale=1)
+                    bond_rate = gr.Number(label="Rate (%)", minimum=0, scale=1)
+                    bond_add_btn = gr.Button("Add Bond", variant="primary", scale=1)
 
-                bond_select = gr.Dropdown(
-                    label="Select Bond",
-                    choices=reference_service.list_bond_choices(),
-                    value=None,
-                )
                 with gr.Row():
-                    bond_purchase_qty = gr.Number(label="Qty", precision=0, minimum=1, scale=1)
-                    bond_purchase_date = gr.DateTime(label="Purchase Date", include_time=False, type="datetime", scale=1)
-                    bond_purchase_btn = gr.Button("Record Purchase", variant="primary", scale=1)
-                with gr.Row():
-                    bond_valuation_value = gr.Number(label="Current value / bond (PLN)", minimum=0, scale=1)
-                    bond_valuation_btn = gr.Button("Update Value", variant="primary", scale=1)
-                with gr.Row():
-                    period_num_input = gr.Number(label="Period #", precision=0, minimum=1, scale=1)
-                    period_rate_input = gr.Number(label="Rate (%)", minimum=0, scale=1)
-                    period_rate_save_btn = gr.Button("Save Rate", scale=1)
-                with gr.Row():
-                    bond_delete_btn = gr.Button("Delete Bond", variant="stop")
+                    bond_select = gr.Dropdown(label="Delete bond", choices=bond_service.list_bond_choices(), allow_custom_value=True, value=None, scale=3)
+                    bond_delete_btn = gr.Button("Delete", variant="stop", scale=1)
 
                 bond_output = gr.Textbox(label="Result", interactive=False)
 
@@ -130,11 +113,11 @@ def create_ui():
                 account_select = gr.Dropdown(
                     label="Existing Account",
                     choices=reference_service.list_account_choices(),
-                    value=None,
+                    allow_custom_value=True, value=None,
                 )
                 with gr.Row():
                     acc_name = gr.Textbox(label="Name", scale=2)
-                    acc_type = gr.Dropdown(label="Type", choices=ACCOUNT_TYPE_CHOICES, value=None, scale=1)
+                    acc_type = gr.Dropdown(label="Type", choices=ACCOUNT_TYPE_CHOICES, allow_custom_value=True, value=None, scale=1)
                     acc_currency = gr.Textbox(label="Currency", value="PLN", scale=1)
                     acc_balance = gr.Number(label="Balance", value=0.0, scale=1)
                 acc_active = gr.Checkbox(label="Active", value=True)
@@ -154,7 +137,7 @@ def create_ui():
                 tx_select = gr.Dropdown(
                     label="Existing Transaction",
                     choices=reference_service.list_transaction_choices(),
-                    value=None,
+                    allow_custom_value=True, value=None,
                 )
                 with gr.Row():
                     txn_ts = gr.Textbox(
@@ -165,13 +148,13 @@ def create_ui():
                     txn_symbol = gr.Dropdown(
                         label="Holding Symbol",
                         choices=reference_service.list_holding_symbols(),
-                        value=None,
+                        allow_custom_value=True, value=None,
                         scale=1,
                     )
                     txn_account = gr.Dropdown(
                         label="Account",
                         choices=reference_service.list_account_names(),
-                        value=None,
+                        allow_custom_value=True, value=None,
                         scale=1,
                     )
 
@@ -215,7 +198,6 @@ def create_ui():
             txn_symbol,
             txn_account,
             account_select,
-            bond_select,
         ]
 
         refresh_btn.click(
@@ -262,49 +244,13 @@ def create_ui():
             outputs=dashboard_outputs,
         )
 
-        bond_select.change(
-            fn=_load_bond_context,
-            inputs=bond_select,
-            outputs=bond_output,
-        )
-
-        quick_add_btn.click(
-            fn=bond_service.save_bond_from_preset,
-            inputs=quick_add_code,
+        bond_add_btn.click(
+            fn=bond_service.add_bond,
+            inputs=[bond_series, bond_qty, bond_date, bond_rate],
             outputs=bond_output,
         ).then(
-            fn=_reference_updates,
-            outputs=refresh_reference_outputs,
-        ).then(
-            fn=_dashboard_payload,
-            inputs=txn_limit,
-            outputs=dashboard_outputs,
-        )
-
-        bond_purchase_btn.click(
-            fn=bond_service.record_bond_purchase,
-            inputs=[bond_select, bond_purchase_qty, bond_purchase_date],
-            outputs=bond_output,
-        ).then(
-            fn=_dashboard_payload,
-            inputs=txn_limit,
-            outputs=dashboard_outputs,
-        )
-
-        bond_valuation_btn.click(
-            fn=bond_service.save_bond_valuation,
-            inputs=[bond_select, gr.State("Unit price"), bond_valuation_value, gr.State(None)],
-            outputs=bond_output,
-        ).then(
-            fn=_dashboard_payload,
-            inputs=txn_limit,
-            outputs=dashboard_outputs,
-        )
-
-        period_rate_save_btn.click(
-            fn=bond_service.save_period_rate,
-            inputs=[bond_select, period_num_input, period_rate_input],
-            outputs=bond_output,
+            fn=_refresh_bond_select,
+            outputs=bond_select,
         ).then(
             fn=_dashboard_payload,
             inputs=txn_limit,
@@ -316,11 +262,8 @@ def create_ui():
             inputs=bond_select,
             outputs=bond_output,
         ).then(
-            fn=_clear_bond_context,
-            outputs=[bond_select, bond_output],
-        ).then(
-            fn=_reference_updates,
-            outputs=refresh_reference_outputs,
+            fn=_refresh_bond_select,
+            outputs=bond_select,
         ).then(
             fn=_dashboard_payload,
             inputs=txn_limit,
