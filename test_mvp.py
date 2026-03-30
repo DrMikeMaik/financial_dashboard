@@ -221,6 +221,11 @@ def test_bonds_simple_ledger():
 
 def test_bond_rate_schedule_valuation():
     print("4. Testing bond yearly-rate valuation logic...")
+    assert bond_service._round_to_half_zloty(Decimal("123.24")) == Decimal("123.0")
+    assert bond_service._round_to_half_zloty(Decimal("123.25")) == Decimal("123.5")
+    assert bond_service._round_to_half_zloty(Decimal("123.74")) == Decimal("123.5")
+    assert bond_service._round_to_half_zloty(Decimal("123.75")) == Decimal("124.0")
+
     edo_schedule = {
         1: Decimal("5.75"),
         2: Decimal("7.15"),

@@ -1,7 +1,7 @@
 """Bond management — simple ledger on the standalone bonds table."""
 import calendar
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 import pandas as pd
 
@@ -11,6 +11,7 @@ from app.core.db import get_connection
 
 FACE_VALUE = Decimal("100")
 YEAR_DAYS = Decimal("365")
+HALF_ZLOTY = Decimal("0.5")
 
 
 def _add_years_safe(value: date, years: int) -> date:
@@ -132,6 +133,10 @@ def _format_rate_schedule(period_rates: dict[int, Decimal]) -> str:
     return "  \n".join(parts)
 
 
+def _round_to_half_zloty(value: Decimal) -> Decimal:
+    return (value / HALF_ZLOTY).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * HALF_ZLOTY
+
+
 def _parse_rate(rate) -> Decimal:
     if rate is None or not str(rate).strip():
         raise ValueError("✗ Enter a rate.")
@@ -175,7 +180,7 @@ def get_bonds_df() -> tuple[pd.DataFrame, list[int]]:
             nominal = qty * FACE_VALUE
             period_rates = rate_schedules.get(bond_id, {})
             actual_per_bond, status = _calc_actual_per_bond(series, purchase_date, period_rates, today, maturity)
-            actual = qty * actual_per_bond
+            actual = _round_to_half_zloty(qty * actual_per_bond)
             total_qty += qty
             total_nominal += nominal
             total_actual += actual
@@ -337,7 +342,7 @@ def get_bonds_total() -> Decimal:
                 today,
                 maturity,
             )
-            total += qty * actual_per_bond
+            total += _round_to_half_zloty(qty * actual_per_bond)
         return total
     finally:
         conn.close()
