@@ -182,7 +182,7 @@ def test_bonds_simple_ledger():
     assert len(ids) == 2
     assert df.iloc[0]["Series"] == "COI0528"
     assert "Rates" in df.columns
-    assert "Y1 5.75%" in df.iloc[0]["Rates"]
+    assert "Y1 5.75%  \nY2 7.15%" == df.iloc[0]["Rates"]
     assert df.iloc[2]["Series"] == "Total"
 
     # portfolio integration — nominal value (qty * 100)
@@ -249,7 +249,7 @@ def test_bond_rate_schedule_valuation():
         date(2032, 8, 8),
     )
     assert frozen_value == bond_service.FACE_VALUE * Decimal("1.0575")
-    assert "year 2" in frozen_warning
+    assert frozen_warning == "Need rate"
 
     partial_value, partial_warning = bond_service._calc_actual_per_bond(
         date(2024, 1, 15),

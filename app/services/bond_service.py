@@ -43,7 +43,7 @@ def _calc_actual_per_bond(
 
         rate = period_rates.get(period_num)
         if rate is None:
-            return value, f"Missing rate for year {period_num}; value frozen at last known anniversary."
+            return value, "Need rate"
 
         rate_multiplier = rate / Decimal("100")
         if end_date >= period_end:
@@ -77,7 +77,7 @@ def _format_rate_schedule(period_rates: dict[int, Decimal]) -> str:
     if not period_rates:
         return ""
     parts = [f"Y{period_num} {rate:.2f}%" for period_num, rate in sorted(period_rates.items())]
-    return ", ".join(parts)
+    return "  \n".join(parts)
 
 
 def _parse_rate(rate) -> Decimal:

@@ -103,7 +103,12 @@ def create_ui():
 
             with gr.Tab("Bonds"):
                 bond_ids_state = gr.State([])
-                bonds_df = gr.DataFrame(label="Bonds")
+                bonds_df = gr.DataFrame(
+                    label="Bonds",
+                    wrap=True,
+                    line_breaks=True,
+                    datatype=["str", "number", "str", "str", "str", "markdown", "str", "str", "str"],
+                )
 
                 with gr.Row():
                     bond_series = gr.Textbox(label="Series (e.g. COI0528)", scale=2)
