@@ -8,21 +8,21 @@ import pandas as pd
 from app.adapters import stocks_yfinance
 from app.core.db import get_connection
 from app.core.portfolio import get_fx_rate_info, get_historical_fx_rate_info, get_latest_price_info
-from app.services.transaction_service import _parse_timestamp, _to_decimal, _validate_no_oversell
+from app.services.transaction_service import _parse_timestamp, _to_decimal, _validate_no_oversell, delete_transaction
 
 
 ORDER_COLUMNS = [
-    "Time",
-    "Security",
+    "Date",
     "Symbol",
     "B/S",
     "Quantity",
-    "Remaining Qty",
     "Price",
+    "Currency",
     "Commission",
     "Trade Value",
     "FX to PLN",
     "Current Value",
+    "Delete",
 ]
 
 
@@ -44,18 +44,18 @@ def _format_money(value: Decimal | None, currency: str) -> str:
     return f"{_format_decimal(value, 2)} {currency}"
 
 
-def _format_price(value: Decimal | None, currency: str) -> str:
+def _format_price(value: Decimal | None) -> str:
     if value is None:
         return ""
-    return f"{_format_decimal(value, 4)} {currency}"
+    return _format_decimal(value, 4)
 
 
-def _format_time(ts: datetime) -> str:
-    return f"{ts:%d.%m.%Y}\n{ts:%H:%M:%S}"
+def _format_date(ts: datetime) -> str:
+    return f"{ts:%Y-%m-%d}"
 
 
-def _format_security(name: str | None, exchange_label: str | None) -> str:
-    title = name or ""
+def _format_symbol(symbol: str, exchange_label: str | None) -> str:
+    title = symbol or ""
     subtitle = exchange_label or ""
     return f"**{title}**  \n{subtitle}".strip()
 
@@ -160,6 +160,26 @@ def list_stock_order_choices(limit: int = 200) -> list[str]:
         ]
     finally:
         conn.close()
+
+
+def delete_stock_order_by_id(transaction_id: int) -> str:
+    """Delete a stock/ETF order by transaction id."""
+    conn = get_connection()
+    try:
+        row = conn.execute("""
+            SELECT h.asset_type
+            FROM transactions t
+            JOIN holdings h ON h.id = t.holding_id
+            WHERE t.id = ?
+        """, [transaction_id]).fetchone()
+        if not row:
+            return "✗ Stock/ETF order not found."
+        if row[0] not in {"stock", "etf"}:
+            return "✗ Selected transaction is not a stock/ETF order."
+    finally:
+        conn.close()
+
+    return delete_transaction(f"{transaction_id} | stock order")
 
 
 def load_stock_order(order_choice: str | None) -> dict[str, Any]:
@@ -359,7 +379,7 @@ def save_stock_order(
         conn.close()
 
 
-def get_stock_orders_df() -> pd.DataFrame:
+def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
     """Build the bank-style stock/ETF order ledger with current valuations."""
     conn = get_connection()
     try:
@@ -385,11 +405,12 @@ def get_stock_orders_df() -> pd.DataFrame:
         """).fetchall()
 
         if not rows:
-            return pd.DataFrame(columns=ORDER_COLUMNS)
+            return pd.DataFrame(columns=ORDER_COLUMNS), []
 
         latest_market = {}
         ledger_rows = []
         open_buy_rows: dict[int, list[int]] = {}
+        row_ids = []
 
         for row in rows:
             txn_id, ts, holding_id, symbol, name, currency, exchange_label, action, qty, price, fee, fee_currency = row
@@ -417,22 +438,23 @@ def get_stock_orders_df() -> pd.DataFrame:
             row_state = {
                 "_id": txn_id,
                 "_ts": ts,
-                "Time": _format_time(ts),
-                "Security": _format_security(name, exchange_label),
-                "Symbol": symbol,
+                "Date": _format_date(ts),
+                "Symbol": _format_symbol(symbol, exchange_label),
                 "B/S": "B" if action == "buy" else "S",
                 "Quantity": _format_quantity(qty_dec),
-                "Remaining Qty": _format_quantity(qty_dec) if action == "buy" else "",
-                "Price": _format_price(price_dec, currency),
+                "Price": _format_price(price_dec),
+                "Currency": currency,
                 "Commission": _format_money(fee_dec, (fee_currency or "PLN").upper()),
                 "Trade Value": _format_money(trade_value_pln, "PLN"),
                 "FX to PLN": _format_decimal(historical_fx, 4) if fx_found else "",
                 "Current Value": "",
+                "Delete": "🗑️",
                 "_holding_id": holding_id,
                 "_action": action,
                 "_remaining_qty": qty_dec if action == "buy" else None,
             }
             ledger_rows.append(row_state)
+            row_ids.append(txn_id)
 
             if action == "buy":
                 open_buy_rows.setdefault(holding_id, []).append(len(ledger_rows) - 1)
@@ -455,8 +477,6 @@ def get_stock_orders_df() -> pd.DataFrame:
                 continue
 
             remaining_qty = row_state["_remaining_qty"] or Decimal("0")
-            row_state["Remaining Qty"] = _format_quantity(remaining_qty)
-
             latest = latest_market[row_state["_holding_id"]]
             if remaining_qty <= 0 or latest["price"] is None or not latest["fx_found"]:
                 row_state["Current Value"] = ""
@@ -466,6 +486,7 @@ def get_stock_orders_df() -> pd.DataFrame:
             row_state["Current Value"] = _format_money(current_value_pln, "PLN")
 
         display_rows = sorted(ledger_rows, key=lambda row: (row["_ts"], row["_id"]), reverse=True)
-        return pd.DataFrame([{column: row[column] for column in ORDER_COLUMNS} for row in display_rows], columns=ORDER_COLUMNS)
+        display_ids = [row["_id"] for row in display_rows]
+        return pd.DataFrame([{column: row[column] for column in ORDER_COLUMNS} for row in display_rows], columns=ORDER_COLUMNS), display_ids
     finally:
         conn.close()

@@ -184,6 +184,7 @@ def create_ui():
                 crypto_output = gr.Textbox(label="Crypto Result", interactive=False)
 
             with gr.Tab("Stocks & ETFs"):
+                stock_order_ids_state = gr.State([])
                 stocks_df = gr.DataFrame(
                     label="Stock & ETF Orders",
                     wrap=True,
@@ -346,6 +347,7 @@ def create_ui():
             positions_df,
             crypto_df,
             stocks_df,
+            stock_order_ids_state,
             bonds_df,
             bond_ids_state,
             accounts_df,
@@ -444,6 +446,27 @@ def create_ui():
         stock_save_btn.click(
             fn=stock_ledger_service.save_stock_order,
             inputs=[stock_order_select, stock_result_select, stock_search_results_state, stock_ts, stock_action, stock_qty, stock_price, stock_fee, stock_note],
+            outputs=stock_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        def _handle_stock_table_click(evt: gr.SelectData, stock_order_ids):
+            if evt.value != "🗑️":
+                return gr.skip()
+            row = evt.index[0]
+            if row >= len(stock_order_ids):
+                return gr.skip()
+            return stock_ledger_service.delete_stock_order_by_id(stock_order_ids[row])
+
+        stocks_df.select(
+            fn=_handle_stock_table_click,
+            inputs=stock_order_ids_state,
             outputs=stock_output,
         ).then(
             fn=_reference_updates,
