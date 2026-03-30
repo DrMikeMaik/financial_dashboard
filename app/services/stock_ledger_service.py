@@ -22,6 +22,7 @@ ORDER_COLUMNS = [
     "Trade Value",
     "FX to PLN",
     "Current Value",
+    "Change %",
     "Delete",
 ]
 
@@ -42,6 +43,12 @@ def _format_money(value: Decimal | None, currency: str) -> str:
     if value is None:
         return ""
     return f"{_format_decimal(value, 2)} {currency}"
+
+
+def _format_percent(value: Decimal | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.2f}%"
 
 
 def _format_price(value: Decimal | None) -> str:
@@ -426,6 +433,7 @@ def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
         total_commission_pln = Decimal("0")
         total_trade_value_pln = Decimal("0")
         total_current_value_pln = Decimal("0")
+        total_open_cost_pln = Decimal("0")
 
         for row in rows:
             txn_id, ts, holding_id, symbol, name, currency, exchange_label, action, qty, price, fee, fee_currency = row
@@ -464,10 +472,14 @@ def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
                 "Trade Value": _format_money(trade_value_pln, "PLN"),
                 "FX to PLN": _format_decimal(historical_fx, 4) if fx_found else "",
                 "Current Value": "",
+                "Change %": "",
                 "Delete": "🗑️",
                 "_holding_id": holding_id,
                 "_action": action,
                 "_remaining_qty": qty_dec if action == "buy" else None,
+                "_qty": qty_dec,
+                "_trade_value_pln": trade_value_pln,
+                "_commission_pln": commission_pln,
             }
             ledger_rows.append(row_state)
             if commission_pln is not None:
@@ -502,8 +514,26 @@ def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
                 continue
 
             current_value_pln = remaining_qty * latest["price"] * latest["fx_rate"]
+            open_trade_value_pln = None
+            if row_state["_trade_value_pln"] is not None and row_state["_qty"] > 0:
+                open_trade_value_pln = row_state["_trade_value_pln"] * remaining_qty / row_state["_qty"]
+            open_commission_pln = None
+            if row_state["_commission_pln"] is not None and row_state["_qty"] > 0:
+                open_commission_pln = row_state["_commission_pln"] * remaining_qty / row_state["_qty"]
+            open_cost_pln = None
+            if open_trade_value_pln is not None:
+                open_cost_pln = open_trade_value_pln + (open_commission_pln or Decimal("0"))
+
             row_state["Current Value"] = _format_money(current_value_pln, "PLN")
+            if open_cost_pln and open_cost_pln > 0:
+                pct_change = ((current_value_pln - open_cost_pln) / open_cost_pln) * Decimal("100")
+                row_state["Change %"] = _format_percent(pct_change)
+                total_open_cost_pln += open_cost_pln
             total_current_value_pln += current_value_pln
+
+        total_pct_change = None
+        if total_open_cost_pln > 0:
+            total_pct_change = ((total_current_value_pln - total_open_cost_pln) / total_open_cost_pln) * Decimal("100")
 
         display_rows = sorted(ledger_rows, key=lambda row: (row["_ts"], row["_id"]), reverse=True)
         display_ids = [row["_id"] for row in display_rows]
@@ -518,6 +548,7 @@ def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
             "Trade Value": _format_money(total_trade_value_pln, "PLN"),
             "FX to PLN": "",
             "Current Value": _format_money(total_current_value_pln, "PLN"),
+            "Change %": _format_percent(total_pct_change),
             "Delete": "",
         })
         return pd.DataFrame([{column: row[column] for column in ORDER_COLUMNS} for row in display_rows], columns=ORDER_COLUMNS), display_ids

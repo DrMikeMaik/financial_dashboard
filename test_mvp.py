@@ -477,11 +477,13 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
     assert df.iloc[1]["FX to PLN"] == "4.0000"
     assert df.iloc[1]["Trade Value"] == "4,000.00 PLN"
     assert df.iloc[1]["Current Value"] == "3,276.00 PLN"
+    assert df.iloc[1]["Change %"] == "35.82%"
     assert df.iloc[1]["Delete"] == "🗑️"
     assert df.iloc[2]["Date"] == "Total"
     assert df.iloc[2]["Commission"] == "28.00 PLN"
     assert df.iloc[2]["Trade Value"] == "5,968.00 PLN"
     assert df.iloc[2]["Current Value"] == "3,276.00 PLN"
+    assert df.iloc[2]["Change %"] == "35.82%"
     assert df.iloc[2]["Delete"] == ""
     assert len(row_ids) == 2
 

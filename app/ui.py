@@ -217,7 +217,7 @@ def create_ui():
                     label="Stock & ETF Orders",
                     wrap=True,
                     line_breaks=True,
-                    datatype=["str", "markdown", "str", "str", "str", "str", "str", "str", "str", "str", "str"],
+                    datatype=["str", "markdown", "str", "str", "str", "str", "str", "str", "str", "str", "str", "str"],
                 )
 
                 gr.Markdown("### Stock / ETF Order Editor")
