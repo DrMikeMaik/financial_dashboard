@@ -68,7 +68,7 @@ def _clear_stock_form() -> tuple:
         "",
         "",
         "",
-        datetime.now().replace(microsecond=0).isoformat(sep=" "),
+        datetime.now().date().isoformat(),
         "buy",
         None,
         None,
@@ -140,6 +140,34 @@ def _load_stock_order_form(order_choice: str | None) -> tuple:
         payload["note"],
         payload["message"],
     )
+
+
+def _save_stock_order_and_refresh(
+    limit,
+    order_choice: str | None,
+    selected_search_choice: str | None,
+    results_state,
+    timestamp_text,
+    action,
+    quantity,
+    price,
+    commission_pln,
+    note: str,
+) -> tuple:
+    result = stock_ledger_service.save_stock_order(
+        order_choice,
+        selected_search_choice,
+        results_state,
+        timestamp_text,
+        action,
+        quantity,
+        price,
+        commission_pln,
+        note,
+    )
+    reference_updates = _reference_updates()
+    dashboard_payload = _refresh_dashboard(limit) if result.startswith("✓") else _dashboard_payload(limit)
+    return (result, *reference_updates, *dashboard_payload)
 
 
 def _append_bond_rate_from_choice(bond_choice: str | None, rate) -> str:
@@ -220,8 +248,8 @@ def create_ui():
 
                 with gr.Row():
                     stock_ts = gr.Textbox(
-                        label="Timestamp",
-                        value=datetime.now().replace(microsecond=0).isoformat(sep=" "),
+                        label="Date",
+                        value=datetime.now().date().isoformat(),
                         scale=2,
                     )
                     stock_action = gr.Dropdown(label="Action", choices=["buy", "sell"], value="buy", scale=1)
@@ -444,16 +472,9 @@ def create_ui():
         )
 
         stock_save_btn.click(
-            fn=stock_ledger_service.save_stock_order,
-            inputs=[stock_order_select, stock_result_select, stock_search_results_state, stock_ts, stock_action, stock_qty, stock_price, stock_fee, stock_note],
-            outputs=stock_output,
-        ).then(
-            fn=_reference_updates,
-            outputs=refresh_reference_outputs,
-        ).then(
-            fn=_dashboard_payload,
-            inputs=txn_limit,
-            outputs=dashboard_outputs,
+            fn=_save_stock_order_and_refresh,
+            inputs=[txn_limit, stock_order_select, stock_result_select, stock_search_results_state, stock_ts, stock_action, stock_qty, stock_price, stock_fee, stock_note],
+            outputs=[stock_output, *refresh_reference_outputs, *dashboard_outputs],
         )
 
         def _handle_stock_table_click(evt: gr.SelectData, stock_order_ids):

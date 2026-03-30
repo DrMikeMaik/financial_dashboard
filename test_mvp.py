@@ -381,16 +381,16 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
     }
 
     blocked = stock_ledger_service.save_stock_order(
-        None, None, [], "2025-01-03 14:32:03", "buy", 10, 100, 20, "should fail"
+        None, None, [], "2025-01-03", "buy", 10, 100, 20, "should fail"
     )
     assert "Search and select" in blocked
 
     result = stock_ledger_service.save_stock_order(
-        None, resolved_result["label"], [resolved_result], "2025-01-03 14:32:03", "buy", 10, 100, 20, "first lot"
+        None, resolved_result["label"], [resolved_result], "2025-01-03", "buy", 10, 100, 20, "first lot"
     )
     assert result.startswith("✓")
     result = stock_ledger_service.save_stock_order(
-        None, resolved_result["label"], [resolved_result], "2025-02-03 09:15:00", "sell", 4, 120, 8, "partial exit"
+        None, resolved_result["label"], [resolved_result], "2025-02-03", "sell", 4, 120, 8, "partial exit"
     )
     assert result.startswith("✓")
 
@@ -405,6 +405,14 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
         WHERE id = ?
     """, [holding_id]).fetchone()[0]
     assert exchange_label == "XETRA EUR"
+    saved_timestamps = conn.execute("""
+        SELECT ts
+        FROM transactions
+        WHERE holding_id = ?
+        ORDER BY ts ASC
+    """, [holding_id]).fetchall()
+    assert saved_timestamps[0][0].strftime("%Y-%m-%d %H:%M:%S") == "2025-01-03 23:59:59"
+    assert saved_timestamps[1][0].strftime("%Y-%m-%d %H:%M:%S") == "2025-02-03 23:59:59"
 
     conn.execute("""
         INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
@@ -444,6 +452,7 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
     loaded = stock_ledger_service.load_stock_order(loaded_choice)
     assert loaded["resolved_symbol"] == "EUNM.DE"
     assert loaded["trade_currency"] == "EUR"
+    assert loaded["timestamp_text"] == "2025-01-03"
 
     position = calculate_positions(conn)[0]
     expected_avg_cost = Decimal("100") + (Decimal("20") / Decimal("4")) / Decimal("10")
@@ -515,8 +524,42 @@ def test_stock_ledger_fetches_and_caches_historical_fx_once():
     print("   ✓ Historical FX gets cached once and missing live prices keep today-value blank.")
 
 
+def test_stock_save_helper_refreshes_dashboard_on_success():
+    print("8. Testing stock save helper refresh behavior...")
+    original_save = stock_ledger_service.save_stock_order
+    original_refs = app_ui._reference_updates
+    original_refresh = app_ui._refresh_dashboard
+    original_payload = app_ui._dashboard_payload
+
+    stock_ledger_service.save_stock_order = lambda *args, **kwargs: "✓ Added buy order for EUNM.DE"
+    app_ui._reference_updates = lambda: ("tx", "sym", "acc", "acct", "bond", "stock")
+    app_ui._refresh_dashboard = lambda limit: ("refresh", "overview", "positions", "crypto", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "txns", "settings")
+    app_ui._dashboard_payload = lambda limit: ("payload", "overview", "positions", "crypto", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "txns", "settings")
+
+    try:
+        success_result = app_ui._save_stock_order_and_refresh(
+            25, None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
+        )
+        assert success_result[0].startswith("✓")
+        assert success_result[7] == "refresh"
+
+        stock_ledger_service.save_stock_order = lambda *args, **kwargs: "✗ nope"
+        fail_result = app_ui._save_stock_order_and_refresh(
+            25, None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
+        )
+        assert fail_result[0].startswith("✗")
+        assert fail_result[7] == "payload"
+    finally:
+        stock_ledger_service.save_stock_order = original_save
+        app_ui._reference_updates = original_refs
+        app_ui._refresh_dashboard = original_refresh
+        app_ui._dashboard_payload = original_payload
+
+    print("   ✓ Successful stock saves trigger the refresh path.")
+
+
 def test_schema_migration_adds_stock_ledger_columns():
-    print("8. Testing schema migration for stock ledger columns...")
+    print("9. Testing schema migration for stock ledger columns...")
     db_path = Path("data") / "test_mvp_schema_migration.duckdb"
     if db_path.exists():
         db_path.unlink()
@@ -561,7 +604,7 @@ def test_schema_migration_adds_stock_ledger_columns():
 
 
 def test_dashboard_payload_smoke():
-    print("9. Testing dashboard payload smoke...")
+    print("10. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
@@ -582,6 +625,7 @@ def main():
     test_stock_search_adapter_and_ui_resolution()
     test_stock_ledger_rows_and_fifo_fee_conversion()
     test_stock_ledger_fetches_and_caches_historical_fx_once()
+    test_stock_save_helper_refreshes_dashboard_on_success()
     test_schema_migration_adds_stock_ledger_columns()
     test_dashboard_payload_smoke()
     print("\n" + "=" * 50)

@@ -1,5 +1,5 @@
 """Stock/ETF order ledger read/write helpers."""
-from datetime import datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -155,7 +155,7 @@ def list_stock_order_choices(limit: int = 200) -> list[str]:
             LIMIT ?
         """, [limit]).fetchall()
         return [
-            f"{row[0]} | {row[1]} | {row[2]} | {row[3]} | {_format_quantity(Decimal(str(row[4] or 0)))} | {row[5] or ''}"
+            f"{row[0]} | {row[1].date()} | {row[2]} | {row[3]} | {_format_quantity(Decimal(str(row[4] or 0)))} | {row[5] or ''}"
             for row in rows
         ]
     finally:
@@ -258,7 +258,7 @@ def load_stock_order(order_choice: str | None) -> dict[str, Any]:
             "trade_currency": row[8] or "",
             "security_name": row[7] or "",
             "exchange_label": row[9] or "",
-            "timestamp_text": row[0].replace(microsecond=0).isoformat(sep=" "),
+            "timestamp_text": row[0].date().isoformat(),
             "action": row[1],
             "quantity": float(row[2]) if row[2] is not None else None,
             "price": float(row[3]) if row[3] is not None else None,
@@ -328,9 +328,9 @@ def save_stock_order(
         return f"✗ {exc}"
 
     try:
-        timestamp = _parse_timestamp(timestamp_text)
+        timestamp = _normalize_stock_order_timestamp(timestamp_text)
     except ValueError:
-        return "✗ Invalid timestamp. Use ISO format like 2026-03-25 14:30:00."
+        return "✗ Invalid date. Use ISO format like 2026-03-25."
 
     qty_dec = _to_decimal(quantity)
     price_dec = _to_decimal(price)
@@ -377,6 +377,19 @@ def save_stock_order(
         return f"✗ Error: {exc}"
     finally:
         conn.close()
+
+
+def _normalize_stock_order_timestamp(timestamp_value) -> datetime:
+    """Normalize stock order input to end-of-day for the chosen calendar date."""
+    if isinstance(timestamp_value, datetime):
+        target_date = timestamp_value.date()
+    elif isinstance(timestamp_value, date):
+        target_date = timestamp_value
+    else:
+        parsed = _parse_timestamp(timestamp_value)
+        target_date = parsed.date()
+
+    return datetime.combine(target_date, time(23, 59, 59))
 
 
 def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
