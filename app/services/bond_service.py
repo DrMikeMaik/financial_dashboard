@@ -21,16 +21,31 @@ def _add_years_safe(value: date, years: int) -> date:
 
 
 def _calc_actual_per_bond(
+    series: str,
     purchase_date: date,
     period_rates: dict[int, Decimal],
     today: date,
     maturity: date | None = None,
 ) -> tuple[Decimal, str | None]:
-    """Compound by yearly schedule and stop at the last known anniversary when a rate is missing."""
+    """Calculate current bond value using series-specific behavior."""
     end_date = min(today, maturity) if maturity else today
     if purchase_date >= end_date:
         return FACE_VALUE, None
 
+    type_code, _ = parse_series_code(series)
+    if type_code == "COI":
+        return _calc_coi_actual_per_bond(purchase_date, period_rates, end_date, maturity)
+
+    return _calc_compound_actual_per_bond(purchase_date, period_rates, end_date, maturity)
+
+
+def _calc_compound_actual_per_bond(
+    purchase_date: date,
+    period_rates: dict[int, Decimal],
+    end_date: date,
+    maturity: date | None = None,
+) -> tuple[Decimal, str | None]:
+    """Compound internally year over year, pro-rating the active year."""
     value = FACE_VALUE
     period_start = purchase_date
     period_num = 1
@@ -57,6 +72,43 @@ def _calc_actual_per_bond(
         break
 
     return value, None
+
+
+def _calc_coi_actual_per_bond(
+    purchase_date: date,
+    period_rates: dict[int, Decimal],
+    end_date: date,
+    maturity: date | None = None,
+) -> tuple[Decimal, str | None]:
+    """COI pays out annually, so current value is principal plus current-year gross accrual only."""
+    period_start = purchase_date
+    period_num = 1
+
+    while period_start < end_date:
+        next_anniversary = _add_years_safe(period_start, 1)
+        period_end = min(next_anniversary, maturity) if maturity else next_anniversary
+        if period_end <= period_start:
+            break
+
+        if end_date > period_end:
+            period_start = period_end
+            period_num += 1
+            continue
+
+        rate = period_rates.get(period_num)
+        if rate is None:
+            return FACE_VALUE, "Need rate"
+
+        rate_multiplier = rate / Decimal("100")
+        if end_date == period_end:
+            if maturity and period_end == maturity:
+                return FACE_VALUE * (Decimal("1") + rate_multiplier), None
+            return FACE_VALUE, None
+
+        elapsed_days = Decimal((end_date - period_start).days)
+        return FACE_VALUE * (Decimal("1") + rate_multiplier * elapsed_days / YEAR_DAYS), None
+
+    return FACE_VALUE, None
 
 
 def _load_bond_rate_schedules(conn) -> dict[int, dict[int, Decimal]]:
@@ -122,7 +174,7 @@ def get_bonds_df() -> tuple[pd.DataFrame, list[int]]:
         for bond_id, series, qty, purchase_date, maturity in rows:
             nominal = qty * FACE_VALUE
             period_rates = rate_schedules.get(bond_id, {})
-            actual_per_bond, status = _calc_actual_per_bond(purchase_date, period_rates, today, maturity)
+            actual_per_bond, status = _calc_actual_per_bond(series, purchase_date, period_rates, today, maturity)
             actual = qty * actual_per_bond
             total_qty += qty
             total_nominal += nominal
@@ -273,12 +325,13 @@ def get_bonds_total() -> Decimal:
     """Sum of all bond actual values for portfolio overview."""
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT id, qty, purchase_date, maturity FROM bonds").fetchall()
+        rows = conn.execute("SELECT id, series, qty, purchase_date, maturity FROM bonds").fetchall()
         rate_schedules = _load_bond_rate_schedules(conn)
         today = date.today()
         total = Decimal("0")
-        for bond_id, qty, purchase_date, maturity in rows:
+        for bond_id, series, qty, purchase_date, maturity in rows:
             actual_per_bond, _ = _calc_actual_per_bond(
+                series,
                 purchase_date,
                 rate_schedules.get(bond_id, {}),
                 today,

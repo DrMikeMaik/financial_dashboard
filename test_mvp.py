@@ -185,10 +185,9 @@ def test_bonds_simple_ledger():
     assert "Y1 5.75%  \nY2 7.15%" == df.iloc[0]["Rates"]
     assert df.iloc[2]["Series"] == "Total"
 
-    # portfolio integration — nominal value (qty * 100)
+    # portfolio integration — COI should never fall below nominal principal
     total = bond_service.get_bonds_total()
-    # Actual uses compound interest from purchase date to today — just verify it's above nominal
-    assert total > Decimal("8000")
+    assert total >= Decimal("8000")
 
     # delete
     _, ids = bond_service.get_bonds_df()
@@ -222,15 +221,16 @@ def test_bonds_simple_ledger():
 
 def test_bond_rate_schedule_valuation():
     print("4. Testing bond yearly-rate valuation logic...")
-    schedule = {
+    edo_schedule = {
         1: Decimal("5.75"),
         2: Decimal("7.15"),
         3: Decimal("6.65"),
         4: Decimal("5.55"),
     }
     value, warning = bond_service._calc_actual_per_bond(
+        "EDO0832",
         date(2023, 8, 8),
-        schedule,
+        edo_schedule,
         date(2026, 3, 30),
         date(2032, 8, 8),
     )
@@ -243,6 +243,7 @@ def test_bond_rate_schedule_valuation():
     assert abs(value - expected) < Decimal("0.0001")
 
     frozen_value, frozen_warning = bond_service._calc_actual_per_bond(
+        "EDO0832",
         date(2023, 8, 8),
         {1: Decimal("5.75")},
         date(2025, 3, 30),
@@ -251,18 +252,57 @@ def test_bond_rate_schedule_valuation():
     assert frozen_value == bond_service.FACE_VALUE * Decimal("1.0575")
     assert frozen_warning == "Need rate"
 
-    partial_value, partial_warning = bond_service._calc_actual_per_bond(
-        date(2024, 1, 15),
+    coi_first_year_value, coi_first_year_warning = bond_service._calc_actual_per_bond(
+        "COI0528",
+        date(2024, 5, 14),
+        {1: Decimal("6.55")},
+        date(2025, 1, 14),
+        date(2028, 5, 14),
+    )
+    coi_first_year_expected = bond_service.FACE_VALUE * (
+        Decimal("1") + Decimal("0.0655") * Decimal((date(2025, 1, 14) - date(2024, 5, 14)).days) / Decimal("365")
+    )
+    assert coi_first_year_warning is None
+    assert abs(coi_first_year_value - coi_first_year_expected) < Decimal("0.0001")
+
+    coi_second_year_value, coi_second_year_warning = bond_service._calc_actual_per_bond(
+        "COI0528",
+        date(2024, 5, 14),
+        {1: Decimal("6.55"), 2: Decimal("5.75")},
+        date(2025, 11, 14),
+        date(2028, 5, 14),
+    )
+    coi_second_year_expected = bond_service.FACE_VALUE * (
+        Decimal("1") + Decimal("0.0575") * Decimal((date(2025, 11, 14) - date(2025, 5, 14)).days) / Decimal("365")
+    )
+    assert coi_second_year_warning is None
+    assert abs(coi_second_year_value - coi_second_year_expected) < Decimal("0.0001")
+
+    coi_missing_rate_value, coi_missing_rate_warning = bond_service._calc_actual_per_bond(
+        "COI0528",
+        date(2024, 5, 14),
         {1: Decimal("5.75")},
-        date(2024, 7, 15),
-        date(2028, 1, 15),
+        date(2025, 11, 14),
+        date(2028, 5, 14),
     )
-    partial_expected = bond_service.FACE_VALUE * (
-        Decimal("1") + Decimal("0.0575") * Decimal((date(2024, 7, 15) - date(2024, 1, 15)).days) / Decimal("365")
+    assert coi_missing_rate_value == bond_service.FACE_VALUE
+    assert coi_missing_rate_warning == "Need rate"
+
+    coi_maturity_value, coi_maturity_warning = bond_service._calc_actual_per_bond(
+        "COI0528",
+        date(2024, 5, 14),
+        {
+            1: Decimal("6.55"),
+            2: Decimal("5.75"),
+            3: Decimal("5.25"),
+            4: Decimal("4.75"),
+        },
+        date(2030, 1, 1),
+        date(2028, 5, 14),
     )
-    assert partial_warning is None
-    assert abs(partial_value - partial_expected) < Decimal("0.0001")
-    print("   ✓ Yearly rate schedules compound and freeze correctly.")
+    assert coi_maturity_warning is None
+    assert coi_maturity_value == bond_service.FACE_VALUE * Decimal("1.0475")
+    print("   ✓ Yearly rate schedules value EDO and COI differently.")
 
 
 def test_dashboard_payload_smoke():
