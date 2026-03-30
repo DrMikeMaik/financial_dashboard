@@ -257,7 +257,7 @@ def create_ui():
                     stock_action = gr.Dropdown(label="Action", choices=["buy", "sell"], value="buy", scale=1)
 
                 with gr.Row():
-                    stock_qty = gr.Number(label="Quantity", scale=1)
+                    stock_qty = gr.Number(label="Qty", scale=1)
                     stock_price = gr.Number(label="Price", scale=1)
                     stock_fee = gr.Number(label="Commission (PLN)", value=0.0, scale=1)
 
