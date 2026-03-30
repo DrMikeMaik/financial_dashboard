@@ -64,3 +64,16 @@ def list_account_choices() -> list[str]:
         conn.close()
 
 
+def list_bond_choices() -> list[str]:
+    """List bond lots as dropdown labels."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT id, series, purchase_date, qty
+            FROM bonds
+            ORDER BY series, purchase_date, id
+        """).fetchall()
+        return [f"{row[0]} | {row[1]} | {row[2]} | qty {row[3]}" for row in rows]
+    finally:
+        conn.close()
+

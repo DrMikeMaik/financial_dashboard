@@ -26,6 +26,7 @@ def _reference_updates() -> tuple:
         gr.update(choices=reference_service.list_holding_symbols(), value=None),
         gr.update(choices=reference_service.list_account_names(), value=None),
         gr.update(choices=reference_service.list_account_choices(), value=None),
+        gr.update(choices=reference_service.list_bond_choices(), value=None),
     )
 
 
@@ -46,6 +47,18 @@ def _clear_transaction_form() -> tuple:
 
 def _clear_account_form() -> tuple:
     return None, "", None, "PLN", 0.0, True, ""
+
+
+def _append_bond_rate_from_choice(bond_choice: str | None, rate) -> str:
+    if not bond_choice or not str(bond_choice).strip():
+        return "✗ Select a bond."
+
+    try:
+        bond_id = int(str(bond_choice).split("|", 1)[0].strip())
+    except ValueError:
+        return "✗ Invalid bond selection."
+
+    return bond_service.append_bond_rate(bond_id, rate)
 
 
 
@@ -96,8 +109,19 @@ def create_ui():
                     bond_series = gr.Textbox(label="Series (e.g. COI0528)", scale=2)
                     bond_qty = gr.Number(label="Qty", precision=0, minimum=1, scale=1)
                     bond_date = gr.DateTime(label="Purchase Date", include_time=False, type="datetime", scale=1)
-                    bond_rate = gr.Number(label="Rate (%)", minimum=0, precision=2, step=0.01, scale=1)
+                    bond_rate = gr.Number(label="Year 1 Rate (%)", minimum=0, precision=2, step=0.01, scale=1)
                     bond_add_btn = gr.Button("Add Bond", variant="primary", scale=1)
+
+                with gr.Row():
+                    bond_select = gr.Dropdown(
+                        label="Existing Bond",
+                        choices=reference_service.list_bond_choices(),
+                        allow_custom_value=False,
+                        value=None,
+                        scale=3,
+                    )
+                    bond_next_rate = gr.Number(label="Next Year Rate (%)", minimum=0, precision=2, step=0.01, scale=1)
+                    bond_append_btn = gr.Button("Append Next Rate", scale=1)
 
                 bond_output = gr.Textbox(label="Result", interactive=False)
 
@@ -194,6 +218,7 @@ def create_ui():
             txn_symbol,
             txn_account,
             account_select,
+            bond_select,
         ]
 
         refresh_btn.click(
@@ -245,6 +270,22 @@ def create_ui():
             inputs=[bond_series, bond_qty, bond_date, bond_rate],
             outputs=bond_output,
         ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            inputs=txn_limit,
+            outputs=dashboard_outputs,
+        )
+
+        bond_append_btn.click(
+            fn=_append_bond_rate_from_choice,
+            inputs=[bond_select, bond_next_rate],
+            outputs=bond_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
             fn=_dashboard_payload,
             inputs=txn_limit,
             outputs=dashboard_outputs,
@@ -262,6 +303,9 @@ def create_ui():
             fn=_handle_bond_table_click,
             inputs=bond_ids_state,
             outputs=bond_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
         ).then(
             fn=_dashboard_payload,
             inputs=txn_limit,

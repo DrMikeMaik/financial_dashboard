@@ -1,7 +1,7 @@
 """Regression coverage for the usable local MVP milestone."""
 from datetime import date, datetime
-from pathlib import Path
 from decimal import Decimal
+from pathlib import Path
 
 import duckdb
 
@@ -149,6 +149,28 @@ def test_bonds_simple_ledger():
     # add bond
     result = bond_service.add_bond("COI0528", 50, datetime(2024, 1, 15), 5.75)
     assert result.startswith("✓")
+    first_bond_id = conn.execute("""
+        SELECT id
+        FROM bonds
+        WHERE series = 'COI0528' AND purchase_date = '2024-01-15'
+    """).fetchone()[0]
+    first_period_rates = conn.execute("""
+        SELECT period_num, rate
+        FROM bond_year_rates
+        WHERE bond_id = ?
+        ORDER BY period_num
+    """, [first_bond_id]).fetchall()
+    assert first_period_rates == [(1, Decimal("5.7500"))]
+
+    result = bond_service.append_bond_rate(first_bond_id, 7.15)
+    assert result.startswith("✓")
+    updated_period_rates = conn.execute("""
+        SELECT period_num, rate
+        FROM bond_year_rates
+        WHERE bond_id = ?
+        ORDER BY period_num
+    """, [first_bond_id]).fetchall()
+    assert updated_period_rates == [(1, Decimal("5.7500")), (2, Decimal("7.1500"))]
 
     # same series, different date — should succeed
     result = bond_service.add_bond("COI0528", 30, datetime(2024, 6, 1), 5.75)
@@ -159,6 +181,8 @@ def test_bonds_simple_ledger():
     assert len(df) == 3  # 2 rows + total
     assert len(ids) == 2
     assert df.iloc[0]["Series"] == "COI0528"
+    assert "Rates" in df.columns
+    assert "Y1 5.75%" in df.iloc[0]["Rates"]
     assert df.iloc[2]["Series"] == "Total"
 
     # portfolio integration — nominal value (qty * 100)
@@ -171,6 +195,8 @@ def test_bonds_simple_ledger():
     assert len(ids) == 2
     result = bond_service.delete_bond_by_id(ids[1])
     assert result.startswith("✓")
+    remaining_child_rates = conn.execute("SELECT COUNT(*) FROM bond_year_rates WHERE bond_id = ?", [ids[1]]).fetchone()[0]
+    assert remaining_child_rates == 0
     _, ids = bond_service.get_bonds_df()
     assert len(ids) == 1
 
@@ -182,12 +208,65 @@ def test_bonds_simple_ledger():
     result = bond_service.add_bond("EDO1131", -5, datetime(2024, 1, 1), 5)
     assert "at least 1" in result
 
+    # validation: appending past the supported number of periods is rejected
+    result = bond_service.append_bond_rate(first_bond_id, 6.65)
+    assert result.startswith("✓")
+    result = bond_service.append_bond_rate(first_bond_id, 5.55)
+    assert result.startswith("✓")
+    result = bond_service.append_bond_rate(first_bond_id, 5.25)
+    assert "already has all 4 yearly rates" in result
+
     conn.close()
     print("   ✓ Bonds simple ledger works correctly.")
 
 
+def test_bond_rate_schedule_valuation():
+    print("4. Testing bond yearly-rate valuation logic...")
+    schedule = {
+        1: Decimal("5.75"),
+        2: Decimal("7.15"),
+        3: Decimal("6.65"),
+        4: Decimal("5.55"),
+    }
+    value, warning = bond_service._calc_actual_per_bond(
+        date(2023, 8, 8),
+        schedule,
+        date(2026, 3, 30),
+        date(2032, 8, 8),
+    )
+    expected = bond_service.FACE_VALUE
+    expected *= Decimal("1.0575")
+    expected *= Decimal("1.0715")
+    elapsed_days = Decimal((date(2026, 3, 30) - date(2025, 8, 8)).days)
+    expected *= Decimal("1") + Decimal("0.0665") * elapsed_days / Decimal("365")
+    assert warning is None
+    assert abs(value - expected) < Decimal("0.0001")
+
+    frozen_value, frozen_warning = bond_service._calc_actual_per_bond(
+        date(2023, 8, 8),
+        {1: Decimal("5.75")},
+        date(2025, 3, 30),
+        date(2032, 8, 8),
+    )
+    assert frozen_value == bond_service.FACE_VALUE * Decimal("1.0575")
+    assert "year 2" in frozen_warning
+
+    partial_value, partial_warning = bond_service._calc_actual_per_bond(
+        date(2024, 1, 15),
+        {1: Decimal("5.75")},
+        date(2024, 7, 15),
+        date(2028, 1, 15),
+    )
+    partial_expected = bond_service.FACE_VALUE * (
+        Decimal("1") + Decimal("0.0575") * Decimal((date(2024, 7, 15) - date(2024, 1, 15)).days) / Decimal("365")
+    )
+    assert partial_warning is None
+    assert abs(partial_value - partial_expected) < Decimal("0.0001")
+    print("   ✓ Yearly rate schedules compound and freeze correctly.")
+
+
 def test_dashboard_payload_smoke():
-    print("4. Testing dashboard payload smoke...")
+    print("5. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
@@ -203,6 +282,7 @@ def main():
     test_price_currency_and_cash_summary()
     test_transaction_crud_and_oversell_protection()
     test_bonds_simple_ledger()
+    test_bond_rate_schedule_valuation()
     test_dashboard_payload_smoke()
     print("\n" + "=" * 50)
     print("✓ MVP regression test complete\n")

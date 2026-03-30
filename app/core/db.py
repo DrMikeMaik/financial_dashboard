@@ -168,7 +168,24 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
             pass
 
 
-    # Bond period interest rates table
+    # Standalone bonds table (simple ledger, no FK to holdings)
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_bonds_id START 1
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bonds (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_bonds_id'),
+            series VARCHAR NOT NULL,
+            qty INTEGER NOT NULL,
+            purchase_date DATE NOT NULL,
+            rate DECIMAL(8, 4) DEFAULT 0,
+            current_value DECIMAL(18, 8),
+            maturity DATE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Bond period interest rates table for the dormant normalized bond_meta flow
     conn.execute("""
         CREATE SEQUENCE IF NOT EXISTS seq_bond_period_rates_id START 1
     """)
@@ -184,20 +201,19 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
         )
     """)
 
-    # Standalone bonds table (simple ledger, no FK to holdings)
+    # Active standalone bond ledger yearly rates
     conn.execute("""
-        CREATE SEQUENCE IF NOT EXISTS seq_bonds_id START 1
+        CREATE SEQUENCE IF NOT EXISTS seq_bond_year_rates_id START 1
     """)
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS bonds (
-            id INTEGER PRIMARY KEY DEFAULT nextval('seq_bonds_id'),
-            series VARCHAR NOT NULL,
-            qty INTEGER NOT NULL,
-            purchase_date DATE NOT NULL,
-            rate DECIMAL(8, 4) DEFAULT 0,
-            current_value DECIMAL(18, 8),
-            maturity DATE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE IF NOT EXISTS bond_year_rates (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_bond_year_rates_id'),
+            bond_id INTEGER NOT NULL,
+            period_num INTEGER NOT NULL,
+            rate DECIMAL(8, 4) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (bond_id) REFERENCES bonds(id),
+            UNIQUE(bond_id, period_num)
         )
     """)
 
