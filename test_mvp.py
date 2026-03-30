@@ -5,6 +5,8 @@ from pathlib import Path
 
 import duckdb
 
+from app import ui as app_ui
+from app.adapters import stocks_yfinance
 from app.core import portfolio as portfolio_core
 from app.core.bonds import parse_series_code
 from app.core.db import init_db
@@ -312,30 +314,85 @@ def test_bond_rate_schedule_valuation():
     print("   ✓ Yearly rate schedules value EDO and COI differently.")
 
 
+def test_stock_search_adapter_and_ui_resolution():
+    print("5. Testing Yahoo stock search normalization and UI field population...")
+
+    original_search = stocks_yfinance.yf.Search
+    original_get_info = stocks_yfinance.get_info
+    original_service_search = stock_ledger_service.search_stock_candidates
+
+    class FakeSearch:
+        def __init__(self, query: str, max_results: int = 8):
+            self.quotes = [{
+                "symbol": "EUNM.DE",
+                "longname": "iShares MSCI EM UCITS ETF USD (Acc)",
+                "exchDisp": "XETRA",
+                "quoteType": "ETF",
+            }]
+
+    stocks_yfinance.yf.Search = FakeSearch
+    stocks_yfinance.get_info = lambda symbol: {
+        "symbol": symbol.upper(),
+        "name": "iShares MSCI EM UCITS ETF USD (Acc)",
+        "currency": "EUR",
+        "exchange": "GER",
+        "exchange_display": "XETRA",
+        "exchange_label": "XETRA EUR",
+        "type": "ETF",
+        "found": True,
+    }
+    try:
+        results = stocks_yfinance.search_instruments("EUNM")
+        assert results[0]["symbol"] == "EUNM.DE"
+        assert results[0]["currency"] == "EUR"
+        assert results[0]["exchange_display"] == "XETRA"
+        assert results[0]["type"] == "ETF"
+
+        normalized_results, _ = stock_ledger_service.search_stock_candidates("EUNM")
+        assert normalized_results[0]["label"] == "EUNM.DE | iShares MSCI EM UCITS ETF USD (Acc) | XETRA | EUR"
+
+        stock_ledger_service.search_stock_candidates = lambda query: (normalized_results, "✓ Found 1 Yahoo stock/ETF matches.")
+        ui_payload = app_ui._search_stock_candidates("EUNM")
+        assert ui_payload[3] == "EUNM.DE"
+        assert ui_payload[4] == "EUR"
+        assert ui_payload[5] == "iShares MSCI EM UCITS ETF USD (Acc)"
+        assert ui_payload[6] == "XETRA EUR"
+    finally:
+        stocks_yfinance.yf.Search = original_search
+        stocks_yfinance.get_info = original_get_info
+        stock_ledger_service.search_stock_candidates = original_service_search
+
+    print("   ✓ Search results expose ticker, currency, and UI-ready metadata.")
+
+
 def test_stock_ledger_rows_and_fifo_fee_conversion():
-    print("5. Testing stock ledger rows, FIFO fee conversion, and current valuation...")
+    print("6. Testing stock ledger rows, FIFO fee conversion, and current valuation...")
     conn = fresh_db("test_mvp_stock_ledger.duckdb")
 
-    original_get_info = stock_ledger_service.stocks_yfinance.get_info
-    stock_ledger_service.stocks_yfinance.get_info = lambda symbol: {
-        "symbol": symbol.upper(),
+    resolved_result = {
+        "symbol": "EUNM.DE",
         "name": "EUNM GR ETF",
         "currency": "EUR",
-        "exchange_label": "DEU-XETRA PLN",
+        "exchange": "GER",
+        "exchange_display": "XETRA",
+        "exchange_label": "XETRA EUR",
         "type": "ETF",
+        "label": "EUNM.DE | EUNM GR ETF | XETRA | EUR",
     }
 
-    try:
-        result = stock_ledger_service.save_stock_order(
-            "2025-01-03 14:32:03", "EUNM.DE", "buy", 10, 100, 20, "", "first lot"
-        )
-        assert result.startswith("✓")
-        result = stock_ledger_service.save_stock_order(
-            "2025-02-03 09:15:00", "EUNM.DE", "sell", 4, 120, 8, "", "partial exit"
-        )
-        assert result.startswith("✓")
-    finally:
-        stock_ledger_service.stocks_yfinance.get_info = original_get_info
+    blocked = stock_ledger_service.save_stock_order(
+        None, None, [], "2025-01-03 14:32:03", "buy", 10, 100, 20, "should fail"
+    )
+    assert "Search and select" in blocked
+
+    result = stock_ledger_service.save_stock_order(
+        None, resolved_result["label"], [resolved_result], "2025-01-03 14:32:03", "buy", 10, 100, 20, "first lot"
+    )
+    assert result.startswith("✓")
+    result = stock_ledger_service.save_stock_order(
+        None, resolved_result["label"], [resolved_result], "2025-02-03 09:15:00", "sell", 4, 120, 8, "partial exit"
+    )
+    assert result.startswith("✓")
 
     holding_id = conn.execute("""
         SELECT id
@@ -347,7 +404,7 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
         FROM holdings
         WHERE id = ?
     """, [holding_id]).fetchone()[0]
-    assert exchange_label == "DEU-XETRA PLN"
+    assert exchange_label == "XETRA EUR"
 
     conn.execute("""
         INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
@@ -365,13 +422,19 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
     df = stock_ledger_service.get_stock_orders_df()
     assert list(df.columns) == stock_ledger_service.ORDER_COLUMNS
     assert df.iloc[0]["B/S"] == "S"
-    assert df.iloc[0]["Value Today"] == ""
+    assert df.iloc[0]["Current Value"] == ""
     assert df.iloc[1]["Remaining Qty"] == "6"
+    assert df.iloc[1]["Symbol"] == "EUNM.DE"
     assert df.iloc[1]["FX to PLN"] == "4.0000"
     assert df.iloc[1]["Trade Value"] == "4,000.00 PLN"
-    assert df.iloc[1]["Value Today"] == "3,276.00 PLN"
-    assert "EUNM GR ETF" in df.iloc[1]["Paper"]
-    assert "DEU-XETRA PLN" in df.iloc[1]["Paper"]
+    assert df.iloc[1]["Current Value"] == "3,276.00 PLN"
+    assert "EUNM GR ETF" in df.iloc[1]["Security"]
+    assert "XETRA EUR" in df.iloc[1]["Security"]
+
+    loaded_choice = stock_ledger_service.list_stock_order_choices()[0]
+    loaded = stock_ledger_service.load_stock_order(loaded_choice)
+    assert loaded["resolved_symbol"] == "EUNM.DE"
+    assert loaded["trade_currency"] == "EUR"
 
     position = calculate_positions(conn)[0]
     expected_avg_cost = Decimal("100") + (Decimal("20") / Decimal("4")) / Decimal("10")
@@ -381,7 +444,7 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
 
 
 def test_stock_ledger_fetches_and_caches_historical_fx_once():
-    print("6. Testing stock ledger historical FX fetch/caching and missing-price behavior...")
+    print("7. Testing stock ledger historical FX fetch/caching and missing-price behavior...")
     conn = fresh_db("test_mvp_stock_fx_cache.duckdb")
     conn.execute("""
         INSERT INTO holdings (asset_type, symbol, name, currency, exchange_label)
@@ -396,6 +459,7 @@ def test_stock_ledger_fetches_and_caches_historical_fx_once():
 
     original_get_rate_on_date = portfolio_core.fx_nbp.get_rate_on_date
     call_counter = {"count": 0}
+    original_apply_stock_choice = app_ui._apply_stock_search_choice
 
     def fake_get_rate_on_date(base_ccy: str, quote_ccy: str, target_date):
         assert base_ccy == "EUR"
@@ -408,9 +472,23 @@ def test_stock_ledger_fetches_and_caches_historical_fx_once():
     try:
         df = stock_ledger_service.get_stock_orders_df()
         assert df.iloc[0]["FX to PLN"] == "4.2500"
-        assert df.iloc[0]["Value Today"] == ""
+        assert df.iloc[0]["Current Value"] == ""
         df = stock_ledger_service.get_stock_orders_df()
         assert df.iloc[0]["FX to PLN"] == "4.2500"
+        ui_selection = app_ui._apply_stock_search_choice(
+            "BMW | BMW AG | XETRA | EUR",
+            [{
+                "symbol": "BMW",
+                "name": "BMW AG",
+                "currency": "EUR",
+                "exchange_display": "XETRA",
+                "exchange_label": "XETRA EUR",
+                "type": "EQUITY",
+                "label": "BMW | BMW AG | XETRA | EUR",
+            }],
+        )
+        assert ui_selection[0] == "BMW"
+        assert ui_selection[1] == "EUR"
     finally:
         portfolio_core.fx_nbp.get_rate_on_date = original_get_rate_on_date
 
@@ -429,7 +507,7 @@ def test_stock_ledger_fetches_and_caches_historical_fx_once():
 
 
 def test_schema_migration_adds_stock_ledger_columns():
-    print("7. Testing schema migration for stock ledger columns...")
+    print("8. Testing schema migration for stock ledger columns...")
     db_path = Path("data") / "test_mvp_schema_migration.duckdb"
     if db_path.exists():
         db_path.unlink()
@@ -474,7 +552,7 @@ def test_schema_migration_adds_stock_ledger_columns():
 
 
 def test_dashboard_payload_smoke():
-    print("8. Testing dashboard payload smoke...")
+    print("9. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
@@ -491,6 +569,7 @@ def main():
     test_transaction_crud_and_oversell_protection()
     test_bonds_simple_ledger()
     test_bond_rate_schedule_valuation()
+    test_stock_search_adapter_and_ui_resolution()
     test_stock_ledger_rows_and_fifo_fee_conversion()
     test_stock_ledger_fetches_and_caches_historical_fx_once()
     test_schema_migration_adds_stock_ledger_columns()

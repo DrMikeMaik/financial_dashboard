@@ -1,6 +1,7 @@
 """Stock/ETF order ledger read/write helpers."""
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 import pandas as pd
 
@@ -12,7 +13,8 @@ from app.services.transaction_service import _parse_timestamp, _to_decimal, _val
 
 ORDER_COLUMNS = [
     "Time",
-    "Paper",
+    "Security",
+    "Symbol",
     "B/S",
     "Quantity",
     "Remaining Qty",
@@ -20,7 +22,7 @@ ORDER_COLUMNS = [
     "Commission",
     "Trade Value",
     "FX to PLN",
-    "Value Today",
+    "Current Value",
 ]
 
 
@@ -52,10 +54,10 @@ def _format_time(ts: datetime) -> str:
     return f"{ts:%d.%m.%Y}\n{ts:%H:%M:%S}"
 
 
-def _format_paper(name: str | None, symbol: str, exchange_label: str | None) -> str:
-    title = name or symbol
-    subtitle = exchange_label or symbol
-    return f"**{title}**  \n{subtitle}"
+def _format_security(name: str | None, exchange_label: str | None) -> str:
+    title = name or ""
+    subtitle = exchange_label or ""
+    return f"**{title}**  \n{subtitle}".strip()
 
 
 def _parse_stock_action(action: str | None) -> str:
@@ -63,6 +65,189 @@ def _parse_stock_action(action: str | None) -> str:
     if normalized not in {"buy", "sell"}:
         raise ValueError("Action must be buy or sell.")
     return normalized
+
+
+def _parse_stock_order_choice(order_choice: str | None) -> int | None:
+    if not order_choice or not str(order_choice).strip():
+        return None
+    try:
+        return int(str(order_choice).split("|", 1)[0].strip())
+    except ValueError:
+        return None
+
+
+def _normalize_result(result: dict[str, Any]) -> dict[str, Any]:
+    symbol = (result.get("symbol") or "").strip().upper()
+    currency = (result.get("currency") or "").strip().upper() or None
+    quote_type = (result.get("type") or "").strip().upper() or None
+    exchange_display = result.get("exchange_display") or result.get("exchange")
+    exchange_label = result.get("exchange_label") or stocks_yfinance.build_exchange_label({
+        "exchDisp": exchange_display,
+        "exchange": result.get("exchange"),
+        "currency": currency,
+    })
+    return {
+        "symbol": symbol,
+        "name": (result.get("name") or symbol).strip(),
+        "currency": currency,
+        "exchange": result.get("exchange"),
+        "exchange_display": exchange_display,
+        "exchange_label": exchange_label,
+        "type": quote_type,
+        "label": _format_search_choice({
+            "symbol": symbol,
+            "name": result.get("name") or symbol,
+            "exchange_display": exchange_display,
+            "currency": currency,
+        }),
+    }
+
+
+def _format_search_choice(result: dict[str, Any]) -> str:
+    name = result.get("name") or result.get("symbol") or ""
+    exchange_display = result.get("exchange_display") or result.get("exchange") or ""
+    currency = result.get("currency") or ""
+    return f"{result.get('symbol', '')} | {name} | {exchange_display} | {currency}"
+
+
+def search_stock_candidates(query: str) -> tuple[list[dict[str, Any]], str]:
+    """Search Yahoo Finance and return normalized stock/ETF candidates."""
+    results = [_normalize_result(result) for result in stocks_yfinance.search_instruments(query)]
+    if results:
+        return results, f"✓ Found {len(results)} Yahoo stock/ETF matches."
+
+    fallback = stocks_yfinance.resolve_exact_symbol(query)
+    if fallback is not None:
+        result = _normalize_result(fallback)
+        return [result], f"✓ Resolved exact Yahoo ticker {result['symbol']}."
+
+    return [], "✗ No Yahoo stock/ETF matches found."
+
+
+def resolve_search_choice(selected_choice: str | None, results_state: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """Resolve the selected search label back to its normalized metadata."""
+    if not selected_choice:
+        return None
+
+    for result in results_state or []:
+        if result.get("label") == selected_choice:
+            return result
+    return None
+
+
+def list_stock_order_choices(limit: int = 200) -> list[str]:
+    """List existing stock/ETF orders for the stock-tab editor."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT
+                t.id,
+                t.ts,
+                h.symbol,
+                t.action,
+                t.qty,
+                h.currency
+            FROM transactions t
+            JOIN holdings h ON h.id = t.holding_id
+            WHERE h.asset_type IN ('stock', 'etf')
+              AND t.action IN ('buy', 'sell')
+            ORDER BY t.ts DESC, t.id DESC
+            LIMIT ?
+        """, [limit]).fetchall()
+        return [
+            f"{row[0]} | {row[1]} | {row[2]} | {row[3]} | {_format_quantity(Decimal(str(row[4] or 0)))} | {row[5] or ''}"
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+def load_stock_order(order_choice: str | None) -> dict[str, Any]:
+    """Load an existing stock/ETF order into the stock-tab form."""
+    if _parse_stock_order_choice(order_choice) is None:
+        return {
+            "search_query": "",
+            "results_state": [],
+            "selected_choice": None,
+            "resolved_symbol": "",
+            "trade_currency": "",
+            "security_name": "",
+            "exchange_label": "",
+            "timestamp_text": datetime.now().replace(microsecond=0).isoformat(sep=" "),
+            "action": "buy",
+            "quantity": None,
+            "price": None,
+            "commission": 0.0,
+            "note": "",
+            "message": "",
+        }
+
+    transaction_id = _parse_stock_order_choice(order_choice)
+    conn = get_connection()
+    try:
+        row = conn.execute("""
+            SELECT
+                t.ts,
+                t.action,
+                t.qty,
+                t.price,
+                t.fee,
+                t.note,
+                h.symbol,
+                h.name,
+                h.currency,
+                h.exchange_label,
+                h.asset_type
+            FROM transactions t
+            JOIN holdings h ON h.id = t.holding_id
+            WHERE t.id = ?
+              AND h.asset_type IN ('stock', 'etf')
+        """, [transaction_id]).fetchone()
+
+        if not row:
+            return {
+                "search_query": "",
+                "results_state": [],
+                "selected_choice": None,
+                "resolved_symbol": "",
+                "trade_currency": "",
+                "security_name": "",
+                "exchange_label": "",
+                "timestamp_text": datetime.now().replace(microsecond=0).isoformat(sep=" "),
+                "action": "buy",
+                "quantity": None,
+                "price": None,
+                "commission": 0.0,
+                "note": "",
+                "message": "✗ Stock/ETF order not found.",
+            }
+
+        result = _normalize_result({
+            "symbol": row[6],
+            "name": row[7],
+            "currency": row[8],
+            "exchange_label": row[9],
+            "exchange_display": row[9].replace(f" {row[8]}", "") if row[9] and row[8] and row[9].endswith(f" {row[8]}") else row[9],
+            "type": row[10],
+        })
+        return {
+            "search_query": row[6],
+            "results_state": [result],
+            "selected_choice": result["label"],
+            "resolved_symbol": row[6],
+            "trade_currency": row[8] or "",
+            "security_name": row[7] or "",
+            "exchange_label": row[9] or "",
+            "timestamp_text": row[0].replace(microsecond=0).isoformat(sep=" "),
+            "action": row[1],
+            "quantity": float(row[2]) if row[2] is not None else None,
+            "price": float(row[3]) if row[3] is not None else None,
+            "commission": float(row[4] or 0),
+            "note": row[5] or "",
+            "message": f"Loaded stock/ETF order #{transaction_id}.",
+        }
+    finally:
+        conn.close()
 
 
 def _resolve_stock_holding(conn, symbol: str, asset_type: str) -> tuple[int | None, str | None, str | None, str | None]:
@@ -76,50 +261,46 @@ def _resolve_stock_holding(conn, symbol: str, asset_type: str) -> tuple[int | No
     return row if row else (None, None, None, None)
 
 
-def _get_or_create_stock_holding(conn, symbol: str, exchange_label_override: str | None) -> tuple[int, str]:
-    info = stocks_yfinance.get_info(symbol)
-    asset_type = "etf" if info.get("type") == "ETF" else "stock"
-    name = info.get("name") or symbol
-    currency = (info.get("currency") or "USD").upper()
-    exchange_label = (exchange_label_override or info.get("exchange_label") or "").strip() or None
-
-    holding_id, existing_name, existing_currency, existing_exchange_label = _resolve_stock_holding(conn, symbol, asset_type)
+def _get_or_create_stock_holding_from_result(conn, result: dict[str, Any]) -> int:
+    asset_type = "etf" if result.get("type") == "ETF" else "stock"
+    holding_id, _, _, existing_exchange_label = _resolve_stock_holding(conn, result["symbol"], asset_type)
 
     if holding_id is None:
         holding_id = conn.execute("SELECT nextval('seq_holdings_id')").fetchone()[0]
         conn.execute("""
             INSERT INTO holdings (id, asset_type, symbol, name, currency, exchange_label)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, [holding_id, asset_type, symbol, name, currency, exchange_label])
-        return holding_id, currency
+        """, [holding_id, asset_type, result["symbol"], result["name"], result["currency"], result["exchange_label"]])
+        return holding_id
 
     conn.execute("""
         UPDATE holdings
         SET name = ?, currency = ?, exchange_label = ?
         WHERE id = ?
     """, [
-        name or existing_name,
-        currency or existing_currency,
-        exchange_label if exchange_label is not None else existing_exchange_label,
+        result["name"],
+        result["currency"],
+        result["exchange_label"] if result.get("exchange_label") is not None else existing_exchange_label,
         holding_id,
     ])
-    return holding_id, currency or existing_currency or "USD"
+    return holding_id
 
 
 def save_stock_order(
+    order_choice: str | None,
+    selected_search_choice: str | None,
+    results_state: list[dict[str, Any]] | None,
     timestamp_text: str | None,
-    symbol: str,
     action: str,
     quantity,
     price,
     commission_pln=0,
-    exchange_label_override: str = "",
     note: str = "",
 ) -> str:
-    """Create a stock/ETF buy or sell transaction and auto-create the holding if needed."""
-    normalized_symbol = (symbol or "").strip().upper()
-    if not normalized_symbol:
-        return "✗ Stock/ETF symbol is required."
+    """Create or update a stock/ETF buy or sell transaction from a resolved Yahoo result."""
+    selected_result = resolve_search_choice(selected_search_choice, results_state)
+    if selected_result is None:
+        return "✗ Search and select a Yahoo stock/ETF result before saving."
 
     try:
         normalized_action = _parse_stock_action(action)
@@ -142,25 +323,36 @@ def save_stock_order(
     if fee_dec < 0:
         return "✗ Commission must be zero or greater."
 
+    transaction_id = _parse_stock_order_choice(order_choice)
+
     conn = get_connection()
     try:
-        holding_id, _ = _get_or_create_stock_holding(conn, normalized_symbol, exchange_label_override)
+        holding_id = _get_or_create_stock_holding_from_result(conn, selected_result)
         candidate = {
-            "id": 10**12,
+            "id": transaction_id if transaction_id is not None else 10**12,
             "ts": timestamp,
             "action": normalized_action,
             "qty": qty_dec,
         }
-        oversell_error = _validate_no_oversell(conn, holding_id, candidate=candidate, skip_txn_id=None)
+        oversell_error = _validate_no_oversell(conn, holding_id, candidate=candidate, skip_txn_id=transaction_id)
         if oversell_error:
             return oversell_error
 
+        if transaction_id is None:
+            conn.execute("""
+                INSERT INTO transactions (id, holding_id, account_id, ts, action, qty, price, fee, fee_currency, note)
+                VALUES (nextval('seq_transactions_id'), ?, NULL, ?, ?, ?, ?, ?, 'PLN', ?)
+            """, [holding_id, timestamp, normalized_action, qty_dec, price_dec, fee_dec, note.strip() or None])
+            conn.commit()
+            return f"✓ Added {normalized_action} order for {selected_result['symbol']}"
+
         conn.execute("""
-            INSERT INTO transactions (id, holding_id, account_id, ts, action, qty, price, fee, fee_currency, note)
-            VALUES (nextval('seq_transactions_id'), ?, NULL, ?, ?, ?, ?, ?, 'PLN', ?)
-        """, [holding_id, timestamp, normalized_action, qty_dec, price_dec, fee_dec, note.strip() or None])
+            UPDATE transactions
+            SET holding_id = ?, ts = ?, action = ?, qty = ?, price = ?, fee = ?, fee_currency = 'PLN', note = ?
+            WHERE id = ?
+        """, [holding_id, timestamp, normalized_action, qty_dec, price_dec, fee_dec, note.strip() or None, transaction_id])
         conn.commit()
-        return f"✓ Added {normalized_action} order for {normalized_symbol}"
+        return f"✓ Updated stock/ETF order #{transaction_id}"
     except Exception as exc:
         return f"✗ Error: {exc}"
     finally:
@@ -226,7 +418,8 @@ def get_stock_orders_df() -> pd.DataFrame:
                 "_id": txn_id,
                 "_ts": ts,
                 "Time": _format_time(ts),
-                "Paper": _format_paper(name, symbol, exchange_label),
+                "Security": _format_security(name, exchange_label),
+                "Symbol": symbol,
                 "B/S": "B" if action == "buy" else "S",
                 "Quantity": _format_quantity(qty_dec),
                 "Remaining Qty": _format_quantity(qty_dec) if action == "buy" else "",
@@ -234,7 +427,7 @@ def get_stock_orders_df() -> pd.DataFrame:
                 "Commission": _format_money(fee_dec, (fee_currency or "PLN").upper()),
                 "Trade Value": _format_money(trade_value_pln, "PLN"),
                 "FX to PLN": _format_decimal(historical_fx, 4) if fx_found else "",
-                "Value Today": "",
+                "Current Value": "",
                 "_holding_id": holding_id,
                 "_action": action,
                 "_remaining_qty": qty_dec if action == "buy" else None,
@@ -266,11 +459,11 @@ def get_stock_orders_df() -> pd.DataFrame:
 
             latest = latest_market[row_state["_holding_id"]]
             if remaining_qty <= 0 or latest["price"] is None or not latest["fx_found"]:
-                row_state["Value Today"] = ""
+                row_state["Current Value"] = ""
                 continue
 
             current_value_pln = remaining_qty * latest["price"] * latest["fx_rate"]
-            row_state["Value Today"] = _format_money(current_value_pln, "PLN")
+            row_state["Current Value"] = _format_money(current_value_pln, "PLN")
 
         display_rows = sorted(ledger_rows, key=lambda row: (row["_ts"], row["_id"]), reverse=True)
         return pd.DataFrame([{column: row[column] for column in ORDER_COLUMNS} for row in display_rows], columns=ORDER_COLUMNS)
