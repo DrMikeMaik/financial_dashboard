@@ -109,6 +109,10 @@ All tables use sequences for auto-incrementing IDs. Database stored at `data/por
 - Test scripts are in root directory (`test_*.py`) - these demonstrate adapter usage
 - `test_mvp.py` covers the daily-use MVP regressions
 - Database schema uses sequences (`seq_*_id`) for auto-increment - don't specify IDs in INSERT statements
+- This is an early-stage, single-user internal tool with disposable test data
+- Prefer simple code and clean schema changes over migration/backfill logic
+- Destructive DB changes are acceptable; the user can reset the DuckDB file at any time
+- Avoid over-investing in polish, defensive error handling, and exhaustive tests unless explicitly requested
 - FIFO calculation is in `portfolio.py:_calculate_holding_position()` - handles buy/sell with fees
 - All prices and FX rates are cached in DuckDB with timestamps
 - User will run bash commands manually in separate terminal window with `poetry run ...`

@@ -65,15 +65,15 @@ def list_account_choices() -> list[str]:
 
 
 def list_bond_choices() -> list[str]:
-    """List bonds as dropdown labels."""
+    """List bond lots as dropdown labels."""
     conn = get_connection()
     try:
         rows = conn.execute("""
-            SELECT h.id, h.symbol, COALESCE(h.name, '')
-            FROM holdings h
-            WHERE h.asset_type = 'bond'
-            ORDER BY h.symbol
+            SELECT id, series, purchase_date, qty
+            FROM bonds
+            ORDER BY series, purchase_date, id
         """).fetchall()
-        return [f"{row[0]} | {row[1]} | {row[2]}".rstrip() for row in rows]
+        return [f"{row[0]} | {row[1]} | {row[2]} | qty {row[3]}" for row in rows]
     finally:
         conn.close()
+

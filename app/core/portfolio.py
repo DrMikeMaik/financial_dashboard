@@ -16,6 +16,7 @@ def calculate_positions(conn: duckdb.DuckDBPyConnection) -> List[Position]:
     holdings_data = conn.execute("""
         SELECT id, asset_type, symbol, name, currency
         FROM holdings
+        WHERE asset_type != 'bond'
         ORDER BY symbol
     """).fetchall()
 
@@ -215,7 +216,7 @@ def get_portfolio_warnings(
     missing_price_rows = conn.execute("""
         SELECT h.symbol
         FROM holdings h
-        WHERE h.asset_type IN ('crypto', 'stock', 'etf', 'bond')
+        WHERE h.asset_type IN ('crypto', 'stock', 'etf')
           AND NOT EXISTS (
               SELECT 1
               FROM prices p
@@ -236,7 +237,7 @@ def get_portfolio_warnings(
             FROM prices
             GROUP BY holding_id
         ) latest ON latest.holding_id = h.id
-        WHERE h.asset_type IN ('crypto', 'stock', 'etf', 'bond')
+        WHERE h.asset_type IN ('crypto', 'stock', 'etf')
           AND latest.ts < ?
         ORDER BY latest.ts ASC, h.symbol
     """, [stale_cutoff]).fetchall()

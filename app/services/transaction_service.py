@@ -233,8 +233,8 @@ def save_transaction(
 
         if transaction_id is None:
             conn.execute("""
-                INSERT INTO transactions (holding_id, account_id, ts, action, qty, price, fee, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO transactions (id, holding_id, account_id, ts, action, qty, price, fee, note)
+                VALUES (nextval('seq_transactions_id'), ?, ?, ?, ?, ?, ?, ?, ?)
             """, [holding_id, account_id, timestamp, action, qty_dec, price_dec, fee_dec, note or None])
             conn.commit()
             return f"✓ Added {action} transaction for {symbol.strip().upper()}"

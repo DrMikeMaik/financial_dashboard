@@ -1,9 +1,11 @@
 """Regression coverage for the usable local MVP milestone."""
-from pathlib import Path
+from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import duckdb
 
+from app.core.bonds import parse_series_code
 from app.core.db import init_db
 from app.core.portfolio import calculate_positions, get_latest_price_info, get_portfolio_summary
 from app.services import account_service, bond_service, dashboard_service, holding_service, reference_service, transaction_service
@@ -135,49 +137,186 @@ def test_transaction_crud_and_oversell_protection():
     print("   ✓ CRUD and oversell protections behave as expected.")
 
 
-def test_manual_bond_valuation():
-    print("3. Testing manual bond metadata and valuation flow...")
+def test_bonds_simple_ledger():
+    print("3. Testing bonds simple ledger...")
     conn = fresh_db("test_mvp_bonds.duckdb")
 
-    result = bond_service.save_bond(None, "EDO2030", "Treasury Bond", "PLN", 100, 6.5, 1, "2030-01-01", "Poland")
-    assert result.startswith("✓")
+    # parse_series_code still works
+    type_code, maturity = parse_series_code("COI0528")
+    assert type_code == "COI"
+    assert maturity == date(2028, 5, 1)
 
-    holding_id = conn.execute("""
+    # add bond
+    result = bond_service.add_bond("COI0528", 50, datetime(2024, 1, 15), 5.75)
+    assert result.startswith("✓")
+    first_bond_id = conn.execute("""
         SELECT id
-        FROM holdings
-        WHERE asset_type = 'bond' AND symbol = 'EDO2030'
+        FROM bonds
+        WHERE series = 'COI0528' AND purchase_date = '2024-01-15'
     """).fetchone()[0]
+    first_period_rates = conn.execute("""
+        SELECT period_num, rate
+        FROM bond_year_rates
+        WHERE bond_id = ?
+        ORDER BY period_num
+    """, [first_bond_id]).fetchall()
+    assert first_period_rates == [(1, Decimal("5.7500"))]
 
-    result = transaction_service.save_transaction(None, "2024-01-01 10:00:00", "EDO2030", None, "buy", 10, 95, 0, "bond buy")
+    result = bond_service.append_bond_rate(first_bond_id, 7.15)
+    assert result.startswith("✓")
+    updated_period_rates = conn.execute("""
+        SELECT period_num, rate
+        FROM bond_year_rates
+        WHERE bond_id = ?
+        ORDER BY period_num
+    """, [first_bond_id]).fetchall()
+    assert updated_period_rates == [(1, Decimal("5.7500")), (2, Decimal("7.1500"))]
+
+    # same series, different date — should succeed
+    result = bond_service.add_bond("COI0528", 30, datetime(2024, 6, 1), 5.75)
     assert result.startswith("✓")
 
-    result = bond_service.save_bond_valuation(f"{holding_id} | EDO2030", "Percent of face", 105, "2024-06-01 12:00:00")
+    # table shows both rows + total
+    df, ids = bond_service.get_bonds_df()
+    assert len(df) == 3  # 2 rows + total
+    assert len(ids) == 2
+    assert df.iloc[0]["Series"] == "COI0528"
+    assert "Rates" in df.columns
+    assert "Y1 5.75%  \nY2 7.15%" == df.iloc[0]["Rates"]
+    assert df.iloc[2]["Series"] == "Total"
+
+    # portfolio integration — COI should never fall below nominal principal
+    total = bond_service.get_bonds_total()
+    assert total >= Decimal("8000")
+
+    # delete
+    _, ids = bond_service.get_bonds_df()
+    assert len(ids) == 2
+    result = bond_service.delete_bond_by_id(ids[1])
     assert result.startswith("✓")
+    remaining_child_rates = conn.execute("SELECT COUNT(*) FROM bond_year_rates WHERE bond_id = ?", [ids[1]]).fetchone()[0]
+    assert remaining_child_rates == 0
+    _, ids = bond_service.get_bonds_df()
+    assert len(ids) == 1
 
-    latest_price, latest_ccy, latest_source, _ = get_latest_price_info(conn, holding_id)
-    assert latest_price == Decimal("105")
-    assert latest_ccy == "PLN"
-    assert latest_source == "manual"
+    # validation: future date rejected
+    result = bond_service.add_bond("EDO1131", 10, datetime(2099, 1, 1), 5)
+    assert "future" in result
 
-    positions = [position for position in calculate_positions(conn) if position.holding.symbol == "EDO2030"]
-    assert len(positions) == 1
-    assert positions[0].value_pln == Decimal("1050")
+    # validation: negative qty rejected
+    result = bond_service.add_bond("EDO1131", -5, datetime(2024, 1, 1), 5)
+    assert "at least 1" in result
 
-    bond_rows = bond_service.get_bonds_df()
-    assert not bond_rows.empty
-    assert bond_rows.iloc[0]["Source"] == "manual"
+    # validation: appending past the supported number of periods is rejected
+    result = bond_service.append_bond_rate(first_bond_id, 6.65)
+    assert result.startswith("✓")
+    result = bond_service.append_bond_rate(first_bond_id, 5.55)
+    assert result.startswith("✓")
+    result = bond_service.append_bond_rate(first_bond_id, 5.25)
+    assert "already has all 4 yearly rates" in result
 
     conn.close()
-    print("   ✓ Bond metadata and manual valuation flow are correct.")
+    print("   ✓ Bonds simple ledger works correctly.")
+
+
+def test_bond_rate_schedule_valuation():
+    print("4. Testing bond yearly-rate valuation logic...")
+    assert bond_service._round_to_half_zloty(Decimal("123.24")) == Decimal("123.0")
+    assert bond_service._round_to_half_zloty(Decimal("123.25")) == Decimal("123.5")
+    assert bond_service._round_to_half_zloty(Decimal("123.74")) == Decimal("123.5")
+    assert bond_service._round_to_half_zloty(Decimal("123.75")) == Decimal("124.0")
+
+    edo_schedule = {
+        1: Decimal("5.75"),
+        2: Decimal("7.15"),
+        3: Decimal("6.65"),
+        4: Decimal("5.55"),
+    }
+    value, warning = bond_service._calc_actual_per_bond(
+        "EDO0832",
+        date(2023, 8, 8),
+        edo_schedule,
+        date(2026, 3, 30),
+        date(2032, 8, 8),
+    )
+    expected = bond_service.FACE_VALUE
+    expected *= Decimal("1.0575")
+    expected *= Decimal("1.0715")
+    elapsed_days = Decimal((date(2026, 3, 30) - date(2025, 8, 8)).days)
+    expected *= Decimal("1") + Decimal("0.0665") * elapsed_days / Decimal("365")
+    assert warning is None
+    assert abs(value - expected) < Decimal("0.0001")
+
+    frozen_value, frozen_warning = bond_service._calc_actual_per_bond(
+        "EDO0832",
+        date(2023, 8, 8),
+        {1: Decimal("5.75")},
+        date(2025, 3, 30),
+        date(2032, 8, 8),
+    )
+    assert frozen_value == bond_service.FACE_VALUE * Decimal("1.0575")
+    assert frozen_warning == "Need rate"
+
+    coi_first_year_value, coi_first_year_warning = bond_service._calc_actual_per_bond(
+        "COI0528",
+        date(2024, 5, 14),
+        {1: Decimal("6.55")},
+        date(2025, 1, 14),
+        date(2028, 5, 14),
+    )
+    coi_first_year_expected = bond_service.FACE_VALUE * (
+        Decimal("1") + Decimal("0.0655") * Decimal((date(2025, 1, 14) - date(2024, 5, 14)).days) / Decimal("365")
+    )
+    assert coi_first_year_warning is None
+    assert abs(coi_first_year_value - coi_first_year_expected) < Decimal("0.0001")
+
+    coi_second_year_value, coi_second_year_warning = bond_service._calc_actual_per_bond(
+        "COI0528",
+        date(2024, 5, 14),
+        {1: Decimal("6.55"), 2: Decimal("5.75")},
+        date(2025, 11, 14),
+        date(2028, 5, 14),
+    )
+    coi_second_year_expected = bond_service.FACE_VALUE * (
+        Decimal("1") + Decimal("0.0575") * Decimal((date(2025, 11, 14) - date(2025, 5, 14)).days) / Decimal("365")
+    )
+    assert coi_second_year_warning is None
+    assert abs(coi_second_year_value - coi_second_year_expected) < Decimal("0.0001")
+
+    coi_missing_rate_value, coi_missing_rate_warning = bond_service._calc_actual_per_bond(
+        "COI0528",
+        date(2024, 5, 14),
+        {1: Decimal("5.75")},
+        date(2025, 11, 14),
+        date(2028, 5, 14),
+    )
+    assert coi_missing_rate_value == bond_service.FACE_VALUE
+    assert coi_missing_rate_warning == "Need rate"
+
+    coi_maturity_value, coi_maturity_warning = bond_service._calc_actual_per_bond(
+        "COI0528",
+        date(2024, 5, 14),
+        {
+            1: Decimal("6.55"),
+            2: Decimal("5.75"),
+            3: Decimal("5.25"),
+            4: Decimal("4.75"),
+        },
+        date(2030, 1, 1),
+        date(2028, 5, 14),
+    )
+    assert coi_maturity_warning is None
+    assert coi_maturity_value == bond_service.FACE_VALUE * Decimal("1.0475")
+    print("   ✓ Yearly rate schedules value EDO and COI differently.")
 
 
 def test_dashboard_payload_smoke():
-    print("4. Testing dashboard payload smoke...")
+    print("5. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
     payload = dashboard_service.get_dashboard_payload(25)
-    assert len(payload) == 9
+    assert len(payload) == 10
     assert isinstance(payload[0], str)
     print("   ✓ Dashboard payload stays stable for the UI.")
 
@@ -187,7 +326,8 @@ def main():
     print("=" * 50)
     test_price_currency_and_cash_summary()
     test_transaction_crud_and_oversell_protection()
-    test_manual_bond_valuation()
+    test_bonds_simple_ledger()
+    test_bond_rate_schedule_valuation()
     test_dashboard_payload_smoke()
     print("\n" + "=" * 50)
     print("✓ MVP regression test complete\n")

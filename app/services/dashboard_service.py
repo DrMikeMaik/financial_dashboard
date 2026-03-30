@@ -8,6 +8,7 @@ from app.adapters import crypto_coingecko, fx_nbp, stocks_yfinance
 from app.core.db import get_connection, get_setting
 from app.core.portfolio import calculate_positions, get_portfolio_summary
 from app.services.account_service import get_accounts_df
+from app.services import bond_service
 from app.services.bond_service import get_bonds_df
 from app.services.transaction_service import get_transactions_df
 
@@ -33,8 +34,8 @@ def refresh_market_data() -> str:
                 if currency == "PLN":
                     continue
                 conn.execute("""
-                    INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
-                    VALUES (?, ?, 'PLN', ?, 'NBP')
+                    INSERT INTO fx_rates (id, ts, base_ccy, quote_ccy, rate, source)
+                    VALUES (nextval('seq_fx_rates_id'), ?, ?, 'PLN', ?, 'NBP')
                 """, [now, currency, float(rate)])
             messages.append(f"✓ Updated {len(fx_rates)} FX rates from NBP")
         except Exception as exc:
@@ -53,8 +54,8 @@ def refresh_market_data() -> str:
                     if price is None:
                         continue
                     conn.execute("""
-                        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
-                        VALUES (?, ?, ?, 'USD', 'CoinGecko')
+                        INSERT INTO prices (id, holding_id, ts, price, price_ccy, source)
+                        VALUES (nextval('seq_prices_id'), ?, ?, ?, 'USD', 'CoinGecko')
                     """, [holding_id, now, float(price)])
                 messages.append(f"✓ Updated {len(prices)} crypto prices from CoinGecko")
             except Exception as exc:
@@ -71,8 +72,8 @@ def refresh_market_data() -> str:
                         stock_errors.append(symbol)
                         continue
                     conn.execute("""
-                        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
-                        VALUES (?, ?, ?, ?, 'yfinance')
+                        INSERT INTO prices (id, holding_id, ts, price, price_ccy, source)
+                        VALUES (nextval('seq_prices_id'), ?, ?, ?, ?, 'yfinance')
                     """, [holding_id, now, float(price), currency])
                     updated += 1
                 except Exception:
@@ -158,6 +159,9 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
     finally:
         conn.close()
 
+    bonds_total = bond_service.get_bonds_total()
+    net_worth = summary['net_worth'] + bonds_total
+
     warnings_md = ""
     if summary["warnings"]:
         warnings_md = "\n".join(f"- {warning}" for warning in summary["warnings"])
@@ -169,8 +173,9 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
     summary_text = f"""
 ## Portfolio Summary
 
-**Net Worth:** {summary['net_worth']:,.2f} PLN
+**Net Worth:** {net_worth:,.2f} PLN
 **Holdings Value:** {summary['holdings_value']:,.2f} PLN
+**Bonds:** {bonds_total:,.2f} PLN
 **Cash:** {summary['cash']:,.2f} PLN
 **Unrealized P/L:** {summary['unrealized_pl']:,.2f} PLN
 
@@ -189,13 +194,15 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
 def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "") -> tuple:
     """Return all dashboard outputs used by the top-level refresh."""
     overview_md, positions_df = get_overview_data()
+    bonds_dataframe, bonds_ids = get_bonds_df()
     return (
         refresh_status,
         overview_md,
         positions_df,
         get_crypto_holdings_df(),
         get_stock_holdings_df(),
-        get_bonds_df(),
+        bonds_dataframe,
+        bonds_ids,
         get_accounts_df(),
         get_transactions_df(transaction_limit),
         get_settings_markdown(),

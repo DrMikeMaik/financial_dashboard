@@ -11,8 +11,8 @@ def add_crypto_holding(symbol: str, name: str, currency: str = "USD") -> str:
     conn = get_connection()
     try:
         conn.execute("""
-            INSERT INTO holdings (asset_type, symbol, name, currency)
-            VALUES ('crypto', ?, ?, ?)
+            INSERT INTO holdings (id, asset_type, symbol, name, currency)
+            VALUES (nextval('seq_holdings_id'), 'crypto', ?, ?, ?)
         """, [symbol.strip().upper(), name.strip() or None, currency.strip().upper()])
         conn.commit()
         return f"✓ Added crypto holding: {symbol.strip().upper()}"
@@ -35,8 +35,8 @@ def add_stock_holding(symbol: str, currency: str = "USD") -> str:
         asset_type = "etf" if info.get("type") == "ETF" else "stock"
 
         conn.execute("""
-            INSERT INTO holdings (asset_type, symbol, name, currency)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO holdings (id, asset_type, symbol, name, currency)
+            VALUES (nextval('seq_holdings_id'), ?, ?, ?, ?)
         """, [asset_type, symbol.strip().upper(), name, detected_currency])
         conn.commit()
         return f"✓ Added {asset_type} holding: {symbol.strip().upper()} ({name})"
