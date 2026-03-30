@@ -365,8 +365,46 @@ def test_stock_search_adapter_and_ui_resolution():
     print("   ✓ Search results expose ticker, currency, and UI-ready metadata.")
 
 
+def test_minor_unit_price_normalization():
+    print("6. Testing minor-unit Yahoo price normalization...")
+    original_ticker = stocks_yfinance.yf.Ticker
+
+    class FakeTicker:
+        def __init__(self, symbol: str):
+            self.info = {
+                "currency": "GBp",
+                "regularMarketPrice": 6682.0,
+                "quoteType": "EQUITY",
+                "exchange": "LSE",
+                "fullExchangeName": "LSE",
+                "longName": "iShares Physical Gold ETC",
+            }
+            self.fast_info = {
+                "currency": "GBp",
+                "regularMarketPreviousClose": 65.97,
+            }
+
+        def history(self, period="5d", start=None, end=None):
+            import pandas as pd
+
+            return pd.DataFrame({
+                "Close": [64.0, 66.019997, 63.82, 65.970001, 6682.0],
+            })
+
+    stocks_yfinance.yf.Ticker = FakeTicker
+    try:
+        info = stocks_yfinance.get_info("SGLN.L")
+        assert info["currency"] == "GBP"
+        price = stocks_yfinance.get_current_price("SGLN.L")
+        assert price == Decimal("66.82")
+    finally:
+        stocks_yfinance.yf.Ticker = original_ticker
+
+    print("   ✓ Minor-unit Yahoo prices are normalized to major currency values.")
+
+
 def test_stock_ledger_rows_and_fifo_fee_conversion():
-    print("6. Testing stock ledger rows, FIFO fee conversion, and current valuation...")
+    print("7. Testing stock ledger rows, FIFO fee conversion, and current valuation...")
     conn = fresh_db("test_mvp_stock_ledger.duckdb")
 
     resolved_result = {
@@ -435,7 +473,7 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
     assert "EUNM.DE" in df.iloc[1]["Symbol"]
     assert "XETRA EUR" in df.iloc[1]["Symbol"]
     assert df.iloc[1]["Price"] == "100.0000"
-    assert df.iloc[1]["Currency"] == "EUR"
+    assert df.iloc[1]["CCY"] == "EUR"
     assert df.iloc[1]["FX to PLN"] == "4.0000"
     assert df.iloc[1]["Trade Value"] == "4,000.00 PLN"
     assert df.iloc[1]["Current Value"] == "3,276.00 PLN"
@@ -452,7 +490,7 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
     loaded = stock_ledger_service.load_stock_order(loaded_choice)
     assert loaded["resolved_symbol"] == "EUNM.DE"
     assert loaded["trade_currency"] == "EUR"
-    assert loaded["timestamp_text"] == "2025-01-03"
+    assert loaded["timestamp_text"].date().isoformat() == "2025-01-03"
 
     position = calculate_positions(conn)[0]
     expected_avg_cost = Decimal("100") + (Decimal("20") / Decimal("4")) / Decimal("10")
@@ -462,7 +500,7 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
 
 
 def test_stock_ledger_fetches_and_caches_historical_fx_once():
-    print("7. Testing stock ledger historical FX fetch/caching and missing-price behavior...")
+    print("8. Testing stock ledger historical FX fetch/caching and missing-price behavior...")
     conn = fresh_db("test_mvp_stock_fx_cache.duckdb")
     conn.execute("""
         INSERT INTO holdings (asset_type, symbol, name, currency, exchange_label)
@@ -525,7 +563,7 @@ def test_stock_ledger_fetches_and_caches_historical_fx_once():
 
 
 def test_stock_save_helper_refreshes_dashboard_on_success():
-    print("8. Testing stock save helper refresh behavior...")
+    print("9. Testing stock save helper refresh behavior...")
     original_save = stock_ledger_service.save_stock_order
     original_refs = app_ui._reference_updates
     original_refresh = app_ui._refresh_dashboard
@@ -559,7 +597,7 @@ def test_stock_save_helper_refreshes_dashboard_on_success():
 
 
 def test_schema_migration_adds_stock_ledger_columns():
-    print("9. Testing schema migration for stock ledger columns...")
+    print("10. Testing schema migration for stock ledger columns...")
     db_path = Path("data") / "test_mvp_schema_migration.duckdb"
     if db_path.exists():
         db_path.unlink()
@@ -604,7 +642,7 @@ def test_schema_migration_adds_stock_ledger_columns():
 
 
 def test_dashboard_payload_smoke():
-    print("10. Testing dashboard payload smoke...")
+    print("11. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
@@ -623,6 +661,7 @@ def main():
     test_bonds_simple_ledger()
     test_bond_rate_schedule_valuation()
     test_stock_search_adapter_and_ui_resolution()
+    test_minor_unit_price_normalization()
     test_stock_ledger_rows_and_fifo_fee_conversion()
     test_stock_ledger_fetches_and_caches_historical_fx_once()
     test_stock_save_helper_refreshes_dashboard_on_success()

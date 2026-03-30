@@ -20,18 +20,44 @@ def get_current_price(symbol: str) -> Optional[Decimal]:
     """
     try:
         ticker = yf.Ticker(symbol)
-        info = ticker.info
+        try:
+            info = ticker.info or {}
+        except Exception:
+            info = {}
+        try:
+            fast_info = dict(ticker.fast_info or {})
+        except Exception:
+            fast_info = {}
+
+        currency_code, minor_unit_scale = _normalize_currency_code(
+            info.get("currency") or fast_info.get("currency")
+        )
+
+        hist = ticker.history(period="5d")
+        recent_close = None
+        if not hist.empty and "Close" in hist.columns:
+            close_values = [Decimal(str(value)) for value in hist["Close"].dropna().tolist()]
+            if len(close_values) >= 2:
+                recent_close = close_values[-2]
+            elif close_values:
+                recent_close = close_values[-1]
 
         # Try multiple price fields (Yahoo API is inconsistent)
-        price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
+        price = (
+            info.get("currentPrice")
+            or info.get("regularMarketPrice")
+            or info.get("previousClose")
+            or fast_info.get("lastPrice")
+            or fast_info.get("regularMarketPreviousClose")
+        )
 
         if price:
-            return Decimal(str(price))
+            return _normalize_market_price(price, minor_unit_scale, recent_close=recent_close)
 
         # Fallback: get latest close from history
-        hist = ticker.history(period="1d")
         if not hist.empty and "Close" in hist.columns:
-            return Decimal(str(hist["Close"].iloc[-1]))
+            latest_close = Decimal(str(hist["Close"].iloc[-1]))
+            return _normalize_market_price(latest_close, minor_unit_scale, recent_close=recent_close)
 
         return None
 
@@ -94,7 +120,7 @@ def get_info(symbol: str) -> Dict:
             fast_info = {}
 
         name = info.get("longName") or info.get("shortName") or info.get("displayName")
-        currency = (info.get("currency") or fast_info.get("currency") or "").upper() or None
+        currency, _ = _normalize_currency_code(info.get("currency") or fast_info.get("currency"))
         quote_type = info.get("quoteType")
         exchange = info.get("exchange")
         exchange_display = info.get("exchDisp") or info.get("fullExchangeName") or exchange
@@ -209,6 +235,38 @@ def resolve_exact_symbol(symbol: str) -> Dict | None:
         "exchange_label": info.get("exchange_label"),
         "type": quote_type or None,
     }
+
+
+def _normalize_currency_code(raw_currency: str | None) -> tuple[str | None, Decimal]:
+    """Map Yahoo minor-unit currency codes to display currencies and scales."""
+    if not raw_currency:
+        return None, Decimal("1")
+
+    if raw_currency == "GBp":
+        return "GBP", Decimal("0.01")
+    if raw_currency == "ZAc":
+        return "ZAR", Decimal("0.01")
+
+    return raw_currency.upper(), Decimal("1")
+
+
+def _normalize_market_price(
+    price,
+    scale: Decimal,
+    recent_close: Decimal | None = None,
+) -> Decimal:
+    """Normalize a market price when Yahoo mixes minor and major currency units."""
+    normalized_price = Decimal(str(price))
+    if scale == Decimal("1"):
+        return normalized_price
+
+    if recent_close is not None and recent_close > 0 and normalized_price > recent_close * Decimal("20"):
+        return normalized_price * scale
+
+    if normalized_price >= Decimal("1000"):
+        return normalized_price * scale
+
+    return normalized_price
 
 
 def get_historical_prices(

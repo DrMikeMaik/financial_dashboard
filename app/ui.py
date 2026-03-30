@@ -68,7 +68,7 @@ def _clear_stock_form() -> tuple:
         "",
         "",
         "",
-        datetime.now().date().isoformat(),
+        datetime.now().replace(hour=0, minute=0, second=0, microsecond=0),
         "buy",
         None,
         None,
@@ -247,9 +247,11 @@ def create_ui():
                     stock_exchange_label = gr.Textbox(label="Exchange", interactive=False, scale=2)
 
                 with gr.Row():
-                    stock_ts = gr.Textbox(
+                    stock_ts = gr.DateTime(
                         label="Date",
-                        value=datetime.now().date().isoformat(),
+                        value=datetime.now().replace(hour=0, minute=0, second=0, microsecond=0),
+                        include_time=False,
+                        type="datetime",
                         scale=2,
                     )
                     stock_action = gr.Dropdown(label="Action", choices=["buy", "sell"], value="buy", scale=1)
