@@ -423,7 +423,9 @@ def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
         latest_market = {}
         ledger_rows = []
         open_buy_rows: dict[int, list[int]] = {}
-        row_ids = []
+        total_commission_pln = Decimal("0")
+        total_trade_value_pln = Decimal("0")
+        total_current_value_pln = Decimal("0")
 
         for row in rows:
             txn_id, ts, holding_id, symbol, name, currency, exchange_label, action, qty, price, fee, fee_currency = row
@@ -435,6 +437,7 @@ def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
                 conn, currency, "PLN", ts.date(), fetch_missing=True
             )
             trade_value_pln = qty_dec * price_dec * historical_fx if fx_found else None
+            commission_pln = fee_dec if (fee_currency or "PLN").upper() == "PLN" else None
 
             latest = latest_market.get(holding_id)
             if latest is None:
@@ -467,7 +470,10 @@ def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
                 "_remaining_qty": qty_dec if action == "buy" else None,
             }
             ledger_rows.append(row_state)
-            row_ids.append(txn_id)
+            if commission_pln is not None:
+                total_commission_pln += commission_pln
+            if trade_value_pln is not None:
+                total_trade_value_pln += trade_value_pln
 
             if action == "buy":
                 open_buy_rows.setdefault(holding_id, []).append(len(ledger_rows) - 1)
@@ -497,9 +503,23 @@ def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
 
             current_value_pln = remaining_qty * latest["price"] * latest["fx_rate"]
             row_state["Current Value"] = _format_money(current_value_pln, "PLN")
+            total_current_value_pln += current_value_pln
 
         display_rows = sorted(ledger_rows, key=lambda row: (row["_ts"], row["_id"]), reverse=True)
         display_ids = [row["_id"] for row in display_rows]
+        display_rows.append({
+            "Date": "Total",
+            "Symbol": "",
+            "B/S": "",
+            "Qty": "",
+            "Price": "",
+            "CCY": "",
+            "Commission": _format_money(total_commission_pln, "PLN"),
+            "Trade Value": _format_money(total_trade_value_pln, "PLN"),
+            "FX to PLN": "",
+            "Current Value": _format_money(total_current_value_pln, "PLN"),
+            "Delete": "",
+        })
         return pd.DataFrame([{column: row[column] for column in ORDER_COLUMNS} for row in display_rows], columns=ORDER_COLUMNS), display_ids
     finally:
         conn.close()

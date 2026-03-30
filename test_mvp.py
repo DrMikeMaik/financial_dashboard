@@ -478,12 +478,18 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
     assert df.iloc[1]["Trade Value"] == "4,000.00 PLN"
     assert df.iloc[1]["Current Value"] == "3,276.00 PLN"
     assert df.iloc[1]["Delete"] == "🗑️"
+    assert df.iloc[2]["Date"] == "Total"
+    assert df.iloc[2]["Commission"] == "28.00 PLN"
+    assert df.iloc[2]["Trade Value"] == "5,968.00 PLN"
+    assert df.iloc[2]["Current Value"] == "3,276.00 PLN"
+    assert df.iloc[2]["Delete"] == ""
     assert len(row_ids) == 2
 
     delete_result = stock_ledger_service.delete_stock_order_by_id(row_ids[0])
     assert delete_result.startswith("✓")
     df_after_delete, remaining_ids = stock_ledger_service.get_stock_orders_df()
-    assert len(df_after_delete) == 1
+    assert len(df_after_delete) == 2
+    assert df_after_delete.iloc[1]["Date"] == "Total"
     assert len(remaining_ids) == 1
 
     loaded_choice = stock_ledger_service.list_stock_order_choices()[0]
