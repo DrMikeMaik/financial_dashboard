@@ -40,6 +40,7 @@ class Holding:
     symbol: str
     name: str | None
     currency: str
+    exchange_label: str | None = None
     created_at: datetime | None = None
 
 
@@ -53,6 +54,7 @@ class Transaction:
     qty: Decimal | None
     price: Decimal | None
     fee: Decimal
+    fee_currency: str | None = None
     note: str | None = None
     created_at: datetime | None = None
 

@@ -5,10 +5,11 @@ from pathlib import Path
 
 import duckdb
 
+from app.core import portfolio as portfolio_core
 from app.core.bonds import parse_series_code
 from app.core.db import init_db
-from app.core.portfolio import calculate_positions, get_latest_price_info, get_portfolio_summary
-from app.services import account_service, bond_service, dashboard_service, holding_service, reference_service, transaction_service
+from app.core.portfolio import calculate_positions, get_portfolio_summary
+from app.services import account_service, bond_service, dashboard_service, holding_service, reference_service, stock_ledger_service, transaction_service
 
 
 SERVICE_MODULES = [
@@ -17,6 +18,7 @@ SERVICE_MODULES = [
     dashboard_service,
     holding_service,
     reference_service,
+    stock_ledger_service,
     transaction_service,
 ]
 
@@ -310,8 +312,169 @@ def test_bond_rate_schedule_valuation():
     print("   ✓ Yearly rate schedules value EDO and COI differently.")
 
 
+def test_stock_ledger_rows_and_fifo_fee_conversion():
+    print("5. Testing stock ledger rows, FIFO fee conversion, and current valuation...")
+    conn = fresh_db("test_mvp_stock_ledger.duckdb")
+
+    original_get_info = stock_ledger_service.stocks_yfinance.get_info
+    stock_ledger_service.stocks_yfinance.get_info = lambda symbol: {
+        "symbol": symbol.upper(),
+        "name": "EUNM GR ETF",
+        "currency": "EUR",
+        "exchange_label": "DEU-XETRA PLN",
+        "type": "ETF",
+    }
+
+    try:
+        result = stock_ledger_service.save_stock_order(
+            "2025-01-03 14:32:03", "EUNM.DE", "buy", 10, 100, 20, "", "first lot"
+        )
+        assert result.startswith("✓")
+        result = stock_ledger_service.save_stock_order(
+            "2025-02-03 09:15:00", "EUNM.DE", "sell", 4, 120, 8, "", "partial exit"
+        )
+        assert result.startswith("✓")
+    finally:
+        stock_ledger_service.stocks_yfinance.get_info = original_get_info
+
+    holding_id = conn.execute("""
+        SELECT id
+        FROM holdings
+        WHERE symbol = 'EUNM.DE'
+    """).fetchone()[0]
+    exchange_label = conn.execute("""
+        SELECT exchange_label
+        FROM holdings
+        WHERE id = ?
+    """, [holding_id]).fetchone()[0]
+    assert exchange_label == "DEU-XETRA PLN"
+
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES
+            ('2025-01-03 00:00:00', 'EUR', 'PLN', 4.0000, 'NBP_HIST'),
+            ('2025-02-03 00:00:00', 'EUR', 'PLN', 4.1000, 'NBP_HIST'),
+            ('2025-03-01 10:00:00', 'EUR', 'PLN', 4.2000, 'NBP')
+    """)
+    conn.execute("""
+        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
+        VALUES (?, '2025-03-01 10:00:00', 130, 'EUR', 'test')
+    """, [holding_id])
+    conn.commit()
+
+    df = stock_ledger_service.get_stock_orders_df()
+    assert list(df.columns) == stock_ledger_service.ORDER_COLUMNS
+    assert df.iloc[0]["B/S"] == "S"
+    assert df.iloc[0]["Value Today"] == ""
+    assert df.iloc[1]["Remaining Qty"] == "6"
+    assert df.iloc[1]["FX to PLN"] == "4.0000"
+    assert df.iloc[1]["Trade Value"] == "4,000.00 PLN"
+    assert df.iloc[1]["Value Today"] == "3,276.00 PLN"
+    assert "EUNM GR ETF" in df.iloc[1]["Paper"]
+    assert "DEU-XETRA PLN" in df.iloc[1]["Paper"]
+
+    position = calculate_positions(conn)[0]
+    expected_avg_cost = Decimal("100") + (Decimal("20") / Decimal("4")) / Decimal("10")
+    assert abs(position.avg_cost - expected_avg_cost) < Decimal("0.00000001")
+    conn.close()
+    print("   ✓ Stock ledger rows and FIFO fee conversion behave as expected.")
+
+
+def test_stock_ledger_fetches_and_caches_historical_fx_once():
+    print("6. Testing stock ledger historical FX fetch/caching and missing-price behavior...")
+    conn = fresh_db("test_mvp_stock_fx_cache.duckdb")
+    conn.execute("""
+        INSERT INTO holdings (asset_type, symbol, name, currency, exchange_label)
+        VALUES ('stock', 'BMW', 'BMW AG', 'EUR', 'XETRA EUR')
+    """)
+    holding_id = conn.execute("SELECT id FROM holdings WHERE symbol = 'BMW'").fetchone()[0]
+    conn.execute("""
+        INSERT INTO transactions (holding_id, ts, action, qty, price, fee, fee_currency)
+        VALUES (?, '2025-01-15 10:00:00', 'buy', 2, 80, 10, 'PLN')
+    """, [holding_id])
+    conn.commit()
+
+    original_get_rate_on_date = portfolio_core.fx_nbp.get_rate_on_date
+    call_counter = {"count": 0}
+
+    def fake_get_rate_on_date(base_ccy: str, quote_ccy: str, target_date):
+        assert base_ccy == "EUR"
+        assert quote_ccy == "PLN"
+        assert target_date == date(2025, 1, 15)
+        call_counter["count"] += 1
+        return Decimal("4.2500")
+
+    portfolio_core.fx_nbp.get_rate_on_date = fake_get_rate_on_date
+    try:
+        df = stock_ledger_service.get_stock_orders_df()
+        assert df.iloc[0]["FX to PLN"] == "4.2500"
+        assert df.iloc[0]["Value Today"] == ""
+        df = stock_ledger_service.get_stock_orders_df()
+        assert df.iloc[0]["FX to PLN"] == "4.2500"
+    finally:
+        portfolio_core.fx_nbp.get_rate_on_date = original_get_rate_on_date
+
+    cached_rows = conn.execute("""
+        SELECT COUNT(*)
+        FROM fx_rates
+        WHERE base_ccy = 'EUR' AND quote_ccy = 'PLN' AND source = 'NBP_HIST'
+    """).fetchone()[0]
+    assert call_counter["count"] == 1
+    assert cached_rows == 1
+
+    summary = get_portfolio_summary(conn)
+    assert any("Missing cached prices" in warning for warning in summary["warnings"])
+    conn.close()
+    print("   ✓ Historical FX gets cached once and missing live prices keep today-value blank.")
+
+
+def test_schema_migration_adds_stock_ledger_columns():
+    print("7. Testing schema migration for stock ledger columns...")
+    db_path = Path("data") / "test_mvp_schema_migration.duckdb"
+    if db_path.exists():
+        db_path.unlink()
+
+    conn = duckdb.connect(str(db_path))
+    conn.execute("CREATE TABLE settings (key VARCHAR PRIMARY KEY, value VARCHAR NOT NULL)")
+    conn.execute("CREATE SEQUENCE seq_holdings_id START 1")
+    conn.execute("""
+        CREATE TABLE holdings (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_holdings_id'),
+            asset_type VARCHAR NOT NULL,
+            symbol VARCHAR NOT NULL,
+            name VARCHAR,
+            currency VARCHAR NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE SEQUENCE seq_transactions_id START 1")
+    conn.execute("""
+        CREATE TABLE transactions (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_transactions_id'),
+            holding_id INTEGER NOT NULL,
+            account_id INTEGER,
+            ts TIMESTAMP NOT NULL,
+            action VARCHAR NOT NULL,
+            qty DECIMAL(18, 8),
+            price DECIMAL(18, 8),
+            fee DECIMAL(18, 8) DEFAULT 0,
+            note VARCHAR,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.close()
+
+    migrated = init_db(str(db_path))
+    holding_columns = {row[1] for row in migrated.execute("PRAGMA table_info('holdings')").fetchall()}
+    transaction_columns = {row[1] for row in migrated.execute("PRAGMA table_info('transactions')").fetchall()}
+    assert "exchange_label" in holding_columns
+    assert "fee_currency" in transaction_columns
+    migrated.close()
+    print("   ✓ Existing databases pick up the new stock ledger columns.")
+
+
 def test_dashboard_payload_smoke():
-    print("5. Testing dashboard payload smoke...")
+    print("8. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
@@ -328,6 +491,9 @@ def main():
     test_transaction_crud_and_oversell_protection()
     test_bonds_simple_ledger()
     test_bond_rate_schedule_valuation()
+    test_stock_ledger_rows_and_fifo_fee_conversion()
+    test_stock_ledger_fetches_and_caches_historical_fx_once()
+    test_schema_migration_adds_stock_ledger_columns()
     test_dashboard_payload_smoke()
     print("\n" + "=" * 50)
     print("✓ MVP regression test complete\n")

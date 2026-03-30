@@ -3,7 +3,15 @@ from datetime import datetime
 
 import gradio as gr
 
-from app.services import account_service, bond_service, dashboard_service, holding_service, reference_service, transaction_service
+from app.services import (
+    account_service,
+    bond_service,
+    dashboard_service,
+    holding_service,
+    reference_service,
+    stock_ledger_service,
+    transaction_service,
+)
 
 
 ACCOUNT_TYPE_CHOICES = ["checking", "savings", "investment", "credit", "other"]
@@ -91,14 +99,31 @@ def create_ui():
                 crypto_output = gr.Textbox(label="Crypto Result", interactive=False)
 
             with gr.Tab("Stocks & ETFs"):
-                stocks_df = gr.DataFrame(label="Stock & ETF Holdings")
+                stocks_df = gr.DataFrame(
+                    label="Stock & ETF Orders",
+                    wrap=True,
+                    line_breaks=True,
+                    datatype=["str", "markdown", "str", "str", "str", "str", "str", "str", "str", "str"],
+                )
 
-                gr.Markdown("### Add Stock / ETF Holding")
+                gr.Markdown("### Add Stock / ETF Order")
                 with gr.Row():
-                    stock_symbol = gr.Textbox(label="Symbol", scale=2)
-                    stock_currency = gr.Textbox(label="Currency Override", value="USD", scale=1)
+                    stock_ts = gr.Textbox(
+                        label="Timestamp",
+                        value=datetime.now().replace(microsecond=0).isoformat(sep=" "),
+                        scale=2,
+                    )
+                    stock_symbol = gr.Textbox(label="Symbol", scale=1)
+                    stock_action = gr.Dropdown(label="Action", choices=["buy", "sell"], value="buy", scale=1)
 
-                stock_save_btn = gr.Button("Save Stock / ETF Holding")
+                with gr.Row():
+                    stock_qty = gr.Number(label="Quantity", scale=1)
+                    stock_price = gr.Number(label="Price", scale=1)
+                    stock_fee = gr.Number(label="Commission (PLN)", value=0.0, scale=1)
+
+                stock_exchange_label = gr.Textbox(label="Exchange Label Override", placeholder="Optional", scale=3)
+                stock_note = gr.Textbox(label="Note")
+                stock_save_btn = gr.Button("Save Stock / ETF Order")
                 stock_output = gr.Textbox(label="Stock Result", interactive=False)
 
             with gr.Tab("Bonds"):
@@ -258,8 +283,8 @@ def create_ui():
         )
 
         stock_save_btn.click(
-            fn=holding_service.add_stock_holding,
-            inputs=[stock_symbol, stock_currency],
+            fn=stock_ledger_service.save_stock_order,
+            inputs=[stock_ts, stock_symbol, stock_action, stock_qty, stock_price, stock_fee, stock_exchange_label, stock_note],
             outputs=stock_output,
         ).then(
             fn=_reference_updates,

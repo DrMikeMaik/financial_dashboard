@@ -10,6 +10,7 @@ from app.core.portfolio import calculate_positions, get_portfolio_summary
 from app.services.account_service import get_accounts_df
 from app.services import bond_service
 from app.services.bond_service import get_bonds_df
+from app.services.stock_ledger_service import get_stock_orders_df
 from app.services.transaction_service import get_transactions_df
 
 
@@ -200,7 +201,7 @@ def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "")
         overview_md,
         positions_df,
         get_crypto_holdings_df(),
-        get_stock_holdings_df(),
+        get_stock_orders_df(),
         bonds_dataframe,
         bonds_ids,
         get_accounts_df(),

@@ -76,12 +76,22 @@ def get_info(symbol: str) -> Dict:
             "name": info.get("longName") or info.get("shortName"),
             "currency": info.get("currency", "USD"),
             "exchange": info.get("exchange"),
+            "exchange_label": build_exchange_label(info),
             "type": info.get("quoteType"),  # EQUITY, ETF, MUTUALFUND, etc.
         }
 
     except Exception as e:
         print(f"Error fetching info for {symbol}: {e}")
-        return {"symbol": symbol.upper(), "currency": "USD"}
+        return {"symbol": symbol.upper(), "currency": "USD", "exchange_label": None}
+
+
+def build_exchange_label(info: Dict) -> str | None:
+    """Build a compact exchange/market label for display in the stock ledger."""
+    exchange = info.get("exchange") or info.get("fullExchangeName") or info.get("market")
+    currency = info.get("currency")
+
+    parts = [part for part in (exchange, currency) if part]
+    return " ".join(parts) if parts else None
 
 
 def get_historical_prices(

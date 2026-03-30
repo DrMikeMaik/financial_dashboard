@@ -79,6 +79,7 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
             symbol VARCHAR NOT NULL,
             name VARCHAR,
             currency VARCHAR NOT NULL,
+            exchange_label VARCHAR,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(asset_type, symbol)
         )
@@ -98,12 +99,25 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
             qty DECIMAL(18, 8),
             price DECIMAL(18, 8),
             fee DECIMAL(18, 8) DEFAULT 0,
+            fee_currency VARCHAR,
             note VARCHAR,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (holding_id) REFERENCES holdings(id),
             FOREIGN KEY (account_id) REFERENCES accounts(id)
         )
     """)
+
+    for col in ("exchange_label VARCHAR",):
+        try:
+            conn.execute(f"ALTER TABLE holdings ADD COLUMN {col}")
+        except duckdb.CatalogException:
+            pass
+
+    for col in ("fee_currency VARCHAR",):
+        try:
+            conn.execute(f"ALTER TABLE transactions ADD COLUMN {col}")
+        except duckdb.CatalogException:
+            pass
 
     # Prices cache table
     conn.execute("""

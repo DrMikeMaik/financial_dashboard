@@ -1,9 +1,11 @@
 """Portfolio position calculations with FIFO cost basis."""
 import duckdb
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import List, Dict, Tuple
-from app.core.models import Position, Holding, Transaction, TransactionAction
+
+from app.adapters import fx_nbp
+from app.core.models import AssetType, Position, Holding, TransactionAction
 
 
 def calculate_positions(conn: duckdb.DuckDBPyConnection) -> List[Position]:
@@ -14,7 +16,7 @@ def calculate_positions(conn: duckdb.DuckDBPyConnection) -> List[Position]:
     """
     # Get all holdings
     holdings_data = conn.execute("""
-        SELECT id, asset_type, symbol, name, currency
+        SELECT id, asset_type, symbol, name, currency, exchange_label
         FROM holdings
         WHERE asset_type != 'bond'
         ORDER BY symbol
@@ -23,14 +25,15 @@ def calculate_positions(conn: duckdb.DuckDBPyConnection) -> List[Position]:
     positions = []
 
     for holding_data in holdings_data:
-        holding_id, asset_type, symbol, name, currency = holding_data
+        holding_id, asset_type, symbol, name, currency, exchange_label = holding_data
 
         holding = Holding(
             id=holding_id,
             asset_type=asset_type,
             symbol=symbol,
             name=name,
-            currency=currency
+            currency=currency,
+            exchange_label=exchange_label,
         )
 
         # Calculate position for this holding
@@ -46,7 +49,7 @@ def _calculate_holding_position(conn: duckdb.DuckDBPyConnection, holding: Holdin
 
     # Get all transactions for this holding, ordered by timestamp (FIFO)
     txns_data = conn.execute("""
-        SELECT id, ts, action, qty, price, fee
+        SELECT id, ts, action, qty, price, fee, fee_currency
         FROM transactions
         WHERE holding_id = ?
         ORDER BY ts ASC, id ASC
@@ -60,7 +63,7 @@ def _calculate_holding_position(conn: duckdb.DuckDBPyConnection, holding: Holdin
     total_realized_pl = Decimal("0")
 
     for txn_data in txns_data:
-        txn_id, ts, action, qty, price, fee = txn_data
+        txn_id, ts, action, qty, price, fee, fee_currency = txn_data
 
         if qty is None:
             qty = Decimal("0")
@@ -68,12 +71,13 @@ def _calculate_holding_position(conn: duckdb.DuckDBPyConnection, holding: Holdin
             price = Decimal("0")
         if fee is None:
             fee = Decimal("0")
+        effective_fee = _convert_fee_to_trade_currency(conn, holding, ts, fee, fee_currency)
 
         if action == TransactionAction.BUY.value:
             # Add to FIFO queue
             # Cost per unit includes proportional fee
             if qty > 0:
-                cost_per_unit = price + (fee / qty)
+                cost_per_unit = price + (effective_fee / qty)
                 fifo_queue.append((qty, cost_per_unit))
 
         elif action == TransactionAction.SELL.value:
@@ -88,7 +92,7 @@ def _calculate_holding_position(conn: duckdb.DuckDBPyConnection, holding: Holdin
                     fifo_queue.pop(0)
                     proceeds = oldest_qty * price
                     cost = oldest_qty * oldest_cost
-                    realized_pl = proceeds - cost - fee * (oldest_qty / qty)  # proportional fee
+                    realized_pl = proceeds - cost - effective_fee * (oldest_qty / qty)
                     total_realized_pl += realized_pl
                     remaining_to_sell -= oldest_qty
                 else:
@@ -96,7 +100,7 @@ def _calculate_holding_position(conn: duckdb.DuckDBPyConnection, holding: Holdin
                     fifo_queue[0] = (oldest_qty - remaining_to_sell, oldest_cost)
                     proceeds = remaining_to_sell * price
                     cost = remaining_to_sell * oldest_cost
-                    realized_pl = proceeds - cost - fee * (remaining_to_sell / qty)
+                    realized_pl = proceeds - cost - effective_fee * (remaining_to_sell / qty)
                     total_realized_pl += realized_pl
                     remaining_to_sell = Decimal("0")
 
@@ -203,6 +207,89 @@ def get_fx_rate_info(
 
     # Not found, return 1.0 as fallback
     return Decimal("1.0"), False, None, None
+
+
+def get_historical_fx_rate_info(
+    conn: duckdb.DuckDBPyConnection,
+    from_ccy: str,
+    to_ccy: str,
+    target_date: date,
+    fetch_missing: bool = False,
+) -> Tuple[Decimal, bool, str | None, datetime | None]:
+    """Get same-day FX details, optionally fetching from NBP for PLN pairs."""
+    if from_ccy == to_ccy:
+        return Decimal("1.0"), True, "identity", datetime.combine(target_date, time.min)
+
+    result = conn.execute("""
+        SELECT rate, source, ts
+        FROM fx_rates
+        WHERE base_ccy = ? AND quote_ccy = ? AND CAST(ts AS DATE) = ?
+        ORDER BY CASE WHEN source = 'NBP_HIST' THEN 0 ELSE 1 END, ts DESC
+        LIMIT 1
+    """, [from_ccy, to_ccy, target_date]).fetchone()
+    if result:
+        return Decimal(str(result[0])), True, result[1], result[2]
+
+    result = conn.execute("""
+        SELECT rate, source, ts
+        FROM fx_rates
+        WHERE base_ccy = ? AND quote_ccy = ? AND CAST(ts AS DATE) = ?
+        ORDER BY CASE WHEN source = 'NBP_HIST' THEN 0 ELSE 1 END, ts DESC
+        LIMIT 1
+    """, [to_ccy, from_ccy, target_date]).fetchone()
+    if result:
+        return Decimal("1.0") / Decimal(str(result[0])), True, result[1], result[2]
+
+    if not fetch_missing:
+        return Decimal("1.0"), False, None, None
+
+    normalized_ts = datetime.combine(target_date, time.min)
+    if to_ccy == "PLN":
+        rate = fx_nbp.get_rate_on_date(from_ccy, "PLN", target_date)
+        if rate is not None:
+            conn.execute("""
+                INSERT INTO fx_rates (id, ts, base_ccy, quote_ccy, rate, source)
+                VALUES (nextval('seq_fx_rates_id'), ?, ?, ?, ?, 'NBP_HIST')
+                ON CONFLICT DO NOTHING
+            """, [normalized_ts, from_ccy, "PLN", float(rate)])
+            conn.commit()
+            return rate, True, "NBP_HIST", normalized_ts
+
+    if from_ccy == "PLN":
+        rate = fx_nbp.get_rate_on_date(to_ccy, "PLN", target_date)
+        if rate is not None:
+            conn.execute("""
+                INSERT INTO fx_rates (id, ts, base_ccy, quote_ccy, rate, source)
+                VALUES (nextval('seq_fx_rates_id'), ?, ?, ?, ?, 'NBP_HIST')
+                ON CONFLICT DO NOTHING
+            """, [normalized_ts, to_ccy, "PLN", float(rate)])
+            conn.commit()
+            return Decimal("1.0") / rate, True, "NBP_HIST", normalized_ts
+
+    return Decimal("1.0"), False, None, None
+
+
+def _convert_fee_to_trade_currency(
+    conn: duckdb.DuckDBPyConnection,
+    holding: Holding,
+    txn_ts: datetime,
+    fee: Decimal,
+    fee_currency: str | None,
+) -> Decimal:
+    """Convert stock/ETF PLN commissions into the holding currency for FIFO math."""
+    if fee == 0:
+        return Decimal("0")
+
+    normalized_fee_currency = (fee_currency or holding.currency).upper()
+    if normalized_fee_currency == holding.currency:
+        return fee
+
+    if normalized_fee_currency == "PLN" and holding.asset_type in {AssetType.STOCK.value, AssetType.ETF.value}:
+        rate, found, _, _ = get_historical_fx_rate_info(conn, holding.currency, "PLN", txn_ts.date(), fetch_missing=True)
+        if found and rate != 0:
+            return fee / rate
+
+    return fee
 
 
 def get_portfolio_warnings(
