@@ -487,12 +487,17 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
     assert df.iloc[2]["Delete"] == ""
     assert len(row_ids) == 2
 
+    position = calculate_positions(conn)[0]
+    expected_avg_cost = Decimal("100") + (Decimal("20") / Decimal("4")) / Decimal("10")
+    assert abs(position.avg_cost - expected_avg_cost) < Decimal("0.00000001")
+
     delete_result = stock_ledger_service.delete_stock_order_by_id(row_ids[0])
     assert delete_result.startswith("✓")
     df_after_delete, remaining_ids = stock_ledger_service.get_stock_orders_df()
     assert len(df_after_delete) == 2
     assert df_after_delete.iloc[1]["Date"] == "Total"
     assert len(remaining_ids) == 1
+    assert conn.execute("SELECT COUNT(*) FROM holdings WHERE id = ?", [holding_id]).fetchone()[0] == 1
 
     loaded_choice = stock_ledger_service.list_stock_order_choices()[0]
     loaded = stock_ledger_service.load_stock_order(loaded_choice)
@@ -500,9 +505,14 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
     assert loaded["trade_currency"] == "EUR"
     assert loaded["timestamp_text"].date().isoformat() == "2025-01-03"
 
-    position = calculate_positions(conn)[0]
-    expected_avg_cost = Decimal("100") + (Decimal("20") / Decimal("4")) / Decimal("10")
-    assert abs(position.avg_cost - expected_avg_cost) < Decimal("0.00000001")
+    final_delete_result = stock_ledger_service.delete_stock_order_by_id(remaining_ids[0])
+    assert final_delete_result.startswith("✓")
+    final_df, final_ids = stock_ledger_service.get_stock_orders_df()
+    assert final_df.empty
+    assert final_ids == []
+    assert conn.execute("SELECT COUNT(*) FROM holdings WHERE id = ?", [holding_id]).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM prices WHERE holding_id = ?", [holding_id]).fetchone()[0] == 0
+
     conn.close()
     print("   ✓ Stock ledger rows and FIFO fee conversion behave as expected.")
 

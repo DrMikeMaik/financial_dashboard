@@ -8,7 +8,7 @@ import pandas as pd
 from app.adapters import stocks_yfinance
 from app.core.db import get_connection
 from app.core.portfolio import get_fx_rate_info, get_historical_fx_rate_info, get_latest_price_info
-from app.services.transaction_service import _parse_timestamp, _to_decimal, _validate_no_oversell, delete_transaction
+from app.services.transaction_service import _parse_timestamp, _to_decimal, _validate_no_oversell
 
 
 ORDER_COLUMNS = [
@@ -174,19 +174,39 @@ def delete_stock_order_by_id(transaction_id: int) -> str:
     conn = get_connection()
     try:
         row = conn.execute("""
-            SELECT h.asset_type
+            SELECT h.id, h.asset_type
             FROM transactions t
             JOIN holdings h ON h.id = t.holding_id
             WHERE t.id = ?
         """, [transaction_id]).fetchone()
         if not row:
             return "✗ Stock/ETF order not found."
-        if row[0] not in {"stock", "etf"}:
+        holding_id, asset_type = row
+        if asset_type not in {"stock", "etf"}:
             return "✗ Selected transaction is not a stock/ETF order."
+
+        oversell_error = _validate_no_oversell(conn, holding_id, candidate=None, skip_txn_id=transaction_id)
+        if oversell_error:
+            return "✗ Deleting this transaction would make a later sell invalid."
+
+        conn.execute("DELETE FROM transactions WHERE id = ?", [transaction_id])
+
+        remaining_count = conn.execute("""
+            SELECT COUNT(*)
+            FROM transactions
+            WHERE holding_id = ?
+        """, [holding_id]).fetchone()[0]
+
+        if remaining_count == 0:
+            conn.execute("DELETE FROM prices WHERE holding_id = ?", [holding_id])
+            conn.execute("DELETE FROM holdings WHERE id = ?", [holding_id])
+
+        conn.commit()
+        return "✓ Deleted."
+    except Exception as exc:
+        return f"✗ Error: {exc}"
     finally:
         conn.close()
-
-    return delete_transaction(f"{transaction_id} | stock order")
 
 
 def load_stock_order(order_choice: str | None) -> dict[str, Any]:
