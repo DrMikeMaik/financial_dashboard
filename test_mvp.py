@@ -979,7 +979,10 @@ def test_overview_positions_table_is_pln_only():
     """)
     conn.execute("""
         INSERT INTO accounts (name, type, currency, balance, active)
-        VALUES ('USD Cash', 'checking', 'USD', 100, TRUE)
+        VALUES
+            ('USD Cash 1', 'checking', 'USD', 100, TRUE),
+            ('USD Cash 2', 'checking', 'USD', 25, TRUE),
+            ('PLN Cash', 'checking', 'PLN', 50, TRUE)
     """)
     bond_result = bond_service.add_bond("COI0528", 50, datetime(2024, 1, 15), 5.75)
     assert bond_result.startswith("✓")
@@ -999,7 +1002,7 @@ def test_overview_positions_table_is_pln_only():
         "UPL",
         "Price Source",
     ]
-    assert list(df["Symbol"]) == ["BTC", "COI", "BMW", "USD Cash", "Total"]
+    assert list(df["Symbol"]) == ["BTC", "COI", "BMW", "USD Cash", "PLN Cash", "Total"]
     assert "Name" not in df.columns
     assert df.iloc[0]["Quantity"] == "0.1235"
     assert df.iloc[0]["Avg Cost (PLN)"] == "200,000.00"
@@ -1019,11 +1022,15 @@ def test_overview_positions_table_is_pln_only():
     assert df.iloc[2]["UPL"] == "300.00"
     assert df.iloc[3]["Asset Type"] == "CASH"
     assert df.iloc[3]["Symbol"] == "USD Cash"
-    assert df.iloc[3]["Value (PLN)"] == "400.00"
+    assert df.iloc[3]["Value (PLN)"] == "500.00"
     assert df.iloc[3]["UPL"] == "0.00"
-    assert df.iloc[4]["Symbol"] == "Total"
-    assert df.iloc[4]["Value (PLN)"] == "36,125.92"
-    assert df.iloc[4]["UPL"] == "1,534.57"
+    assert df.iloc[4]["Asset Type"] == "CASH"
+    assert df.iloc[4]["Symbol"] == "PLN Cash"
+    assert df.iloc[4]["Value (PLN)"] == "50.00"
+    assert df.iloc[4]["UPL"] == "0.00"
+    assert df.iloc[5]["Symbol"] == "Total"
+    assert df.iloc[5]["Value (PLN)"] == "36,275.92"
+    assert df.iloc[5]["UPL"] == "1,534.57"
     print("   ✓ Overview positions table is PLN-only and compact.")
 
 

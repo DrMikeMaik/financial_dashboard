@@ -67,16 +67,21 @@ def get_account_overview_rows() -> list[dict[str, str]]:
     conn = get_connection()
     try:
         rows = conn.execute("""
-            SELECT name, currency, balance, active
+            SELECT currency, balance, active
             FROM accounts
-            ORDER BY CASE WHEN currency = 'PLN' THEN 0 ELSE 1 END, name
+            ORDER BY CASE WHEN currency = 'PLN' THEN 0 ELSE 1 END, currency
         """).fetchall()
 
-        overview_rows = []
-        for name, currency, balance, active in rows:
+        balances_by_currency: dict[str, Decimal] = {}
+        for currency, balance, active in rows:
             if not active:
                 continue
-            balance_dec = Decimal(str(balance or 0))
+            balances_by_currency.setdefault(currency, Decimal("0"))
+            balances_by_currency[currency] += Decimal(str(balance or 0))
+
+        overview_rows = []
+        for currency in sorted(balances_by_currency, key=lambda value: (value != "PLN", value)):
+            balance_dec = balances_by_currency[currency]
             fx_rate, found, _, _ = get_fx_rate_info(conn, currency, "PLN")
             if not found and currency != "PLN":
                 continue
@@ -84,7 +89,7 @@ def get_account_overview_rows() -> list[dict[str, str]]:
             balance_pln = balance_dec * fx_rate
             overview_rows.append({
                 "Asset Type": "CASH",
-                "Symbol": name,
+                "Symbol": f"{currency} Cash",
                 "Quantity": "",
                 "Avg Cost (PLN)": "",
                 "Current Price (PLN)": "",
