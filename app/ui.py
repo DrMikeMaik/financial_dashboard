@@ -10,48 +10,28 @@ from app.services import (
     dashboard_service,
     reference_service,
     stock_ledger_service,
-    transaction_service,
 )
 
 
 ACCOUNT_TYPE_CHOICES = ["checking", "savings", "investment", "credit", "other"]
-TRANSACTION_ACTION_CHOICES = ["buy", "sell", "dividend", "transfer"]
 
 
-def _dashboard_payload(limit) -> tuple:
+def _dashboard_payload(limit: int = 50) -> tuple:
     limit = int(limit or 50)
     return dashboard_service.get_dashboard_payload(limit)
 
 
-def _refresh_dashboard(limit) -> tuple:
+def _refresh_dashboard(limit: int = 50) -> tuple:
     limit = int(limit or 50)
     return dashboard_service.refresh_and_get_dashboard(limit)
 
 
 def _reference_updates() -> tuple:
     return (
-        gr.update(choices=reference_service.list_transaction_choices(), value=None),
-        gr.update(choices=reference_service.list_holding_symbols(), value=None),
-        gr.update(choices=reference_service.list_account_names(), value=None),
         gr.update(choices=reference_service.list_account_choices(), value=None),
         gr.update(choices=reference_service.list_bond_choices(), value=None),
         gr.update(choices=crypto_ledger_service.list_crypto_order_choices(), value=None),
         gr.update(choices=stock_ledger_service.list_stock_order_choices(), value=None),
-    )
-
-
-def _clear_transaction_form() -> tuple:
-    return (
-        None,
-        datetime.now().replace(microsecond=0).isoformat(sep=" "),
-        None,
-        None,
-        "buy",
-        None,
-        None,
-        0.0,
-        "",
-        "",
     )
 
 
@@ -164,7 +144,6 @@ def _load_crypto_order_form(order_choice: str | None) -> tuple:
 
 
 def _save_crypto_order_and_refresh(
-    limit,
     order_choice: str | None,
     selected_search_choice: str | None,
     results_state,
@@ -187,7 +166,7 @@ def _save_crypto_order_and_refresh(
         note,
     )
     reference_updates = _reference_updates()
-    dashboard_payload = _refresh_dashboard(limit) if result.startswith("✓") else _dashboard_payload(limit)
+    dashboard_payload = _refresh_dashboard() if result.startswith("✓") else _dashboard_payload()
     return (result, *reference_updates, *dashboard_payload)
 
 
@@ -256,7 +235,6 @@ def _load_stock_order_form(order_choice: str | None) -> tuple:
 
 
 def _save_stock_order_and_refresh(
-    limit,
     order_choice: str | None,
     selected_search_choice: str | None,
     results_state,
@@ -279,7 +257,7 @@ def _save_stock_order_and_refresh(
         note,
     )
     reference_updates = _reference_updates()
-    dashboard_payload = _refresh_dashboard(limit) if result.startswith("✓") else _dashboard_payload(limit)
+    dashboard_payload = _refresh_dashboard() if result.startswith("✓") else _dashboard_payload()
     return (result, *reference_updates, *dashboard_payload)
 
 
@@ -476,54 +454,6 @@ def create_ui():
 
                 acc_output = gr.Textbox(label="Account Result", interactive=False)
 
-            with gr.Tab("Transactions"):
-                txn_limit = gr.Slider(label="Show last N transactions", minimum=10, maximum=200, value=50, step=10)
-                txn_df = gr.DataFrame(label="Recent Transactions")
-
-                gr.Markdown("### Transaction Editor")
-                tx_select = gr.Dropdown(
-                    label="Existing Transaction",
-                    choices=reference_service.list_transaction_choices(),
-                    allow_custom_value=True, value=None,
-                )
-                with gr.Row():
-                    txn_ts = gr.Textbox(
-                        label="Timestamp",
-                        value=datetime.now().replace(microsecond=0).isoformat(sep=" "),
-                        scale=2,
-                    )
-                    txn_symbol = gr.Dropdown(
-                        label="Holding Symbol",
-                        choices=reference_service.list_holding_symbols(),
-                        allow_custom_value=True, value=None,
-                        scale=1,
-                    )
-                    txn_account = gr.Dropdown(
-                        label="Account",
-                        choices=reference_service.list_account_names(),
-                        allow_custom_value=True, value=None,
-                        scale=1,
-                    )
-
-                with gr.Row():
-                    txn_action = gr.Dropdown(
-                        label="Action",
-                        choices=TRANSACTION_ACTION_CHOICES,
-                        value="buy",
-                        scale=1,
-                    )
-                    txn_qty = gr.Number(label="Quantity", scale=1)
-                    txn_price = gr.Number(label="Price / Amount", scale=1)
-                    txn_fee = gr.Number(label="Fee", value=0.0, scale=1)
-
-                txn_note = gr.Textbox(label="Note")
-                with gr.Row():
-                    txn_save_btn = gr.Button("Save Transaction", variant="primary")
-                    txn_delete_btn = gr.Button("Delete Transaction", variant="stop")
-                    txn_clear_btn = gr.Button("Clear")
-
-                txn_output = gr.Textbox(label="Transaction Result", interactive=False)
-
             with gr.Tab("Settings"):
                 settings_md = gr.Markdown()
                 gr.Markdown("*CSV export, import tooling, and ECB fallback remain deferred until the manual MVP is solid.*")
@@ -539,14 +469,10 @@ def create_ui():
             bonds_df,
             bond_ids_state,
             accounts_df,
-            txn_df,
             settings_md,
         ]
 
         refresh_reference_outputs = [
-            tx_select,
-            txn_symbol,
-            txn_account,
             account_select,
             bond_select,
             crypto_order_select,
@@ -555,19 +481,11 @@ def create_ui():
 
         refresh_btn.click(
             fn=_refresh_dashboard,
-            inputs=txn_limit,
             outputs=dashboard_outputs,
         )
 
         demo.load(
             fn=_dashboard_payload,
-            inputs=txn_limit,
-            outputs=dashboard_outputs,
-        )
-
-        txn_limit.change(
-            fn=_dashboard_payload,
-            inputs=txn_limit,
             outputs=dashboard_outputs,
         )
 
@@ -621,7 +539,7 @@ def create_ui():
 
         crypto_save_btn.click(
             fn=_save_crypto_order_and_refresh,
-            inputs=[txn_limit, crypto_order_select, crypto_result_select, crypto_search_results_state, crypto_ts, crypto_action, crypto_qty, crypto_price, crypto_fee, crypto_note],
+            inputs=[crypto_order_select, crypto_result_select, crypto_search_results_state, crypto_ts, crypto_action, crypto_qty, crypto_price, crypto_fee, crypto_note],
             outputs=[crypto_output, *refresh_reference_outputs, *dashboard_outputs],
         )
 
@@ -642,7 +560,6 @@ def create_ui():
             outputs=refresh_reference_outputs,
         ).then(
             fn=_dashboard_payload,
-            inputs=txn_limit,
             outputs=dashboard_outputs,
         )
 
@@ -717,7 +634,7 @@ def create_ui():
 
         stock_save_btn.click(
             fn=_save_stock_order_and_refresh,
-            inputs=[txn_limit, stock_order_select, stock_result_select, stock_search_results_state, stock_ts, stock_action, stock_qty, stock_price, stock_fee, stock_note],
+            inputs=[stock_order_select, stock_result_select, stock_search_results_state, stock_ts, stock_action, stock_qty, stock_price, stock_fee, stock_note],
             outputs=[stock_output, *refresh_reference_outputs, *dashboard_outputs],
         )
 
@@ -738,7 +655,6 @@ def create_ui():
             outputs=refresh_reference_outputs,
         ).then(
             fn=_dashboard_payload,
-            inputs=txn_limit,
             outputs=dashboard_outputs,
         )
 
@@ -772,7 +688,6 @@ def create_ui():
             outputs=refresh_reference_outputs,
         ).then(
             fn=_dashboard_payload,
-            inputs=txn_limit,
             outputs=dashboard_outputs,
         )
 
@@ -785,7 +700,6 @@ def create_ui():
             outputs=refresh_reference_outputs,
         ).then(
             fn=_dashboard_payload,
-            inputs=txn_limit,
             outputs=dashboard_outputs,
         )
 
@@ -806,7 +720,6 @@ def create_ui():
             outputs=refresh_reference_outputs,
         ).then(
             fn=_dashboard_payload,
-            inputs=txn_limit,
             outputs=dashboard_outputs,
         )
 
@@ -825,7 +738,6 @@ def create_ui():
             outputs=refresh_reference_outputs,
         ).then(
             fn=_dashboard_payload,
-            inputs=txn_limit,
             outputs=dashboard_outputs,
         )
 
@@ -838,50 +750,12 @@ def create_ui():
             outputs=refresh_reference_outputs,
         ).then(
             fn=_dashboard_payload,
-            inputs=txn_limit,
             outputs=dashboard_outputs,
         )
 
         acc_clear_btn.click(
             fn=_clear_account_form,
             outputs=[account_select, acc_name, acc_type, acc_currency, acc_balance, acc_active, acc_output],
-        )
-
-        tx_select.change(
-            fn=transaction_service.load_transaction,
-            inputs=tx_select,
-            outputs=[txn_ts, txn_symbol, txn_account, txn_action, txn_qty, txn_price, txn_fee, txn_note, txn_output],
-        )
-
-        txn_save_btn.click(
-            fn=transaction_service.save_transaction,
-            inputs=[tx_select, txn_ts, txn_symbol, txn_account, txn_action, txn_qty, txn_price, txn_fee, txn_note],
-            outputs=txn_output,
-        ).then(
-            fn=_reference_updates,
-            outputs=refresh_reference_outputs,
-        ).then(
-            fn=_dashboard_payload,
-            inputs=txn_limit,
-            outputs=dashboard_outputs,
-        )
-
-        txn_delete_btn.click(
-            fn=transaction_service.delete_transaction,
-            inputs=tx_select,
-            outputs=txn_output,
-        ).then(
-            fn=_reference_updates,
-            outputs=refresh_reference_outputs,
-        ).then(
-            fn=_dashboard_payload,
-            inputs=txn_limit,
-            outputs=dashboard_outputs,
-        )
-
-        txn_clear_btn.click(
-            fn=_clear_transaction_form,
-            outputs=[tx_select, txn_ts, txn_symbol, txn_account, txn_action, txn_qty, txn_price, txn_fee, txn_note, txn_output],
         )
 
     return demo

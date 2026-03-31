@@ -692,23 +692,23 @@ def test_stock_save_helper_refreshes_dashboard_on_success():
     original_payload = app_ui._dashboard_payload
 
     stock_ledger_service.save_stock_order = lambda *args, **kwargs: "✓ Added buy order for EUNM.DE"
-    app_ui._reference_updates = lambda: ("tx", "sym", "acc", "acct", "bond", "crypto_order", "stock")
-    app_ui._refresh_dashboard = lambda limit: ("refresh", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "txns", "settings")
-    app_ui._dashboard_payload = lambda limit: ("payload", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "txns", "settings")
+    app_ui._reference_updates = lambda: ("acct", "bond", "crypto_order", "stock")
+    app_ui._refresh_dashboard = lambda limit=50: ("refresh", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "settings")
+    app_ui._dashboard_payload = lambda limit=50: ("payload", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "settings")
 
     try:
         success_result = app_ui._save_stock_order_and_refresh(
-            25, None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
+            None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
         )
         assert success_result[0].startswith("✓")
-        assert success_result[8] == "refresh"
+        assert success_result[5] == "refresh"
 
         stock_ledger_service.save_stock_order = lambda *args, **kwargs: "✗ nope"
         fail_result = app_ui._save_stock_order_and_refresh(
-            25, None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
+            None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
         )
         assert fail_result[0].startswith("✗")
-        assert fail_result[8] == "payload"
+        assert fail_result[5] == "payload"
     finally:
         stock_ledger_service.save_stock_order = original_save
         app_ui._reference_updates = original_refs
@@ -726,23 +726,23 @@ def test_crypto_save_helper_refreshes_dashboard_on_success():
     original_payload = app_ui._dashboard_payload
 
     crypto_ledger_service.save_crypto_order = lambda *args, **kwargs: "✓ Added buy order for BTC"
-    app_ui._reference_updates = lambda: ("tx", "sym", "acc", "acct", "bond", "crypto_order", "stock")
-    app_ui._refresh_dashboard = lambda limit: ("refresh", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "txns", "settings")
-    app_ui._dashboard_payload = lambda limit: ("payload", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "txns", "settings")
+    app_ui._reference_updates = lambda: ("acct", "bond", "crypto_order", "stock")
+    app_ui._refresh_dashboard = lambda limit=50: ("refresh", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "settings")
+    app_ui._dashboard_payload = lambda limit=50: ("payload", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "settings")
 
     try:
         success_result = app_ui._save_crypto_order_and_refresh(
-            25, None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100000, 0, ""
+            None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100000, 0, ""
         )
         assert success_result[0].startswith("✓")
-        assert success_result[8] == "refresh"
+        assert success_result[5] == "refresh"
 
         crypto_ledger_service.save_crypto_order = lambda *args, **kwargs: "✗ nope"
         fail_result = app_ui._save_crypto_order_and_refresh(
-            25, None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100000, 0, ""
+            None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100000, 0, ""
         )
         assert fail_result[0].startswith("✗")
-        assert fail_result[8] == "payload"
+        assert fail_result[5] == "payload"
     finally:
         crypto_ledger_service.save_crypto_order = original_save
         app_ui._reference_updates = original_refs
@@ -876,7 +876,7 @@ def test_dashboard_payload_smoke():
     conn.close()
 
     payload = dashboard_service.get_dashboard_payload(25)
-    assert len(payload) == 12
+    assert len(payload) == 11
     assert isinstance(payload[0], str)
     assert payload[4] == []
     print("   ✓ Dashboard payload stays stable for the UI.")

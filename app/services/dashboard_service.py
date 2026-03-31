@@ -11,7 +11,6 @@ from app.services import bond_service
 from app.services.bond_service import get_bonds_df
 from app.services.crypto_ledger_service import get_crypto_orders_df
 from app.services.stock_ledger_service import get_stock_orders_df
-from app.services.transaction_service import get_transactions_df
 
 
 def _collect_relevant_fx_currencies(conn, holdings: list[tuple[int, str, str, str, str | None]]) -> set[str]:
@@ -253,7 +252,6 @@ def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "")
         bonds_dataframe,
         bonds_ids,
         get_accounts_df(),
-        get_transactions_df(transaction_limit),
         get_settings_markdown(),
     )
 
