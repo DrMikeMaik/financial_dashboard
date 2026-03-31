@@ -447,13 +447,11 @@ def test_crypto_search_and_ledger_rows():
     assert df.iloc[1]["CCY"] == "PLN"
     assert df.iloc[1]["Fee / Spread"] == "100.00 PLN"
     assert df.iloc[1]["Subtotal"] == "100,000.00 PLN"
-    assert df.iloc[1]["Total"] == "100,100.00 PLN"
     assert df.iloc[1]["Current Value"] == "72,000.00 PLN"
     assert df.iloc[1]["Change %"] == "19.88%"
     assert df.iloc[2]["Date"] == "Total"
     assert df.iloc[2]["Fee / Spread"] == "150.00 PLN"
     assert df.iloc[2]["Subtotal"] == "148,000.00 PLN"
-    assert df.iloc[2]["Total"] == "148,050.00 PLN"
     assert df.iloc[2]["Current Value"] == "72,000.00 PLN"
     assert df.iloc[2]["Change %"] == "19.88%"
     assert len(row_ids) == 2

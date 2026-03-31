@@ -319,7 +319,7 @@ def create_ui():
                     label="Crypto Orders",
                     wrap=True,
                     line_breaks=True,
-                    datatype=["str", "markdown", "str", "str", "str", "str", "str", "str", "str", "str", "str", "str"],
+                    datatype=["str", "markdown", "str", "str", "str", "str", "str", "str", "str", "str", "str"],
                 )
 
                 gr.Markdown("### Crypto Order Editor")

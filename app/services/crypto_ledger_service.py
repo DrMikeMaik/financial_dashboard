@@ -20,7 +20,6 @@ ORDER_COLUMNS = [
     "CCY",
     "Fee / Spread",
     "Subtotal",
-    "Total",
     "Current Value",
     "Change %",
     "Delete",
@@ -441,7 +440,6 @@ def get_crypto_orders_df() -> tuple[pd.DataFrame, list[int]]:
         open_buy_rows: dict[int, list[int]] = {}
         total_fee_pln = Decimal("0")
         total_subtotal_pln = Decimal("0")
-        total_row_value_pln = Decimal("0")
         total_current_value_pln = Decimal("0")
         total_open_cost_pln = Decimal("0")
 
@@ -451,7 +449,6 @@ def get_crypto_orders_df() -> tuple[pd.DataFrame, list[int]]:
             price_dec = Decimal(str(price or 0))
             fee_dec = Decimal(str(fee or 0))
             subtotal_pln = qty_dec * price_dec
-            total_pln = subtotal_pln + fee_dec if action == "buy" else subtotal_pln - fee_dec
 
             latest = latest_market.get(holding_id)
             if latest is None:
@@ -474,7 +471,6 @@ def get_crypto_orders_df() -> tuple[pd.DataFrame, list[int]]:
                 "_qty": qty_dec,
                 "_subtotal_pln": subtotal_pln,
                 "_fee_pln": fee_dec,
-                "_total_pln": total_pln,
                 "Date": _format_date(ts),
                 "Asset": _format_asset(symbol, name),
                 "B/S": "B" if action == "buy" else "S",
@@ -483,7 +479,6 @@ def get_crypto_orders_df() -> tuple[pd.DataFrame, list[int]]:
                 "CCY": currency,
                 "Fee / Spread": _format_money(fee_dec, "PLN"),
                 "Subtotal": _format_money(subtotal_pln, "PLN"),
-                "Total": _format_money(total_pln, "PLN"),
                 "Current Value": "",
                 "Change %": "",
                 "Delete": "🗑️",
@@ -492,7 +487,6 @@ def get_crypto_orders_df() -> tuple[pd.DataFrame, list[int]]:
 
             total_fee_pln += fee_dec
             total_subtotal_pln += subtotal_pln
-            total_row_value_pln += total_pln
 
             if action == "buy":
                 open_buy_rows.setdefault(holding_id, []).append(len(ledger_rows) - 1)
@@ -549,7 +543,6 @@ def get_crypto_orders_df() -> tuple[pd.DataFrame, list[int]]:
             "CCY": "",
             "Fee / Spread": _format_money(total_fee_pln, "PLN"),
             "Subtotal": _format_money(total_subtotal_pln, "PLN"),
-            "Total": _format_money(total_row_value_pln, "PLN"),
             "Current Value": _format_money(total_current_value_pln, "PLN"),
             "Change %": _format_percent(total_pct_change),
             "Delete": "",
