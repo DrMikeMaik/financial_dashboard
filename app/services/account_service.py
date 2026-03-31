@@ -167,22 +167,13 @@ def save_account(
 
 
 def delete_account(account_choice: str | None) -> str:
-    """Delete an account if it is unused."""
+    """Delete an account."""
     account_id = _parse_account_choice(account_choice)
     if account_id is None:
         return "✗ Select an account to delete."
 
     conn = get_connection()
     try:
-        txn_count = conn.execute("""
-            SELECT COUNT(*)
-            FROM transactions
-            WHERE account_id = ?
-        """, [account_id]).fetchone()[0]
-
-        if txn_count:
-            return "✗ Cannot delete an account referenced by transactions."
-
         conn.execute("DELETE FROM accounts WHERE id = ?", [account_id])
         conn.commit()
         return f"✓ Deleted account #{account_id}"
