@@ -360,7 +360,7 @@ def create_ui():
                 with gr.Row():
                     crypto_qty = gr.Number(label="Qty", scale=1)
                     crypto_price = gr.Number(label="Spot Price (PLN)", scale=1)
-                    crypto_fee = gr.Number(label="Fee / Spread (PLN)", value=0.0, scale=1)
+                    crypto_fee = gr.Number(label="Fee (PLN)", value=0.0, scale=1)
 
                 crypto_note = gr.Textbox(label="Note")
                 with gr.Row():
