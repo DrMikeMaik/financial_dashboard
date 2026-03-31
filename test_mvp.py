@@ -6,17 +6,18 @@ from pathlib import Path
 import duckdb
 
 from app import ui as app_ui
-from app.adapters import stocks_yfinance
+from app.adapters import crypto_coingecko, stocks_yfinance
 from app.core import portfolio as portfolio_core
 from app.core.bonds import parse_series_code
 from app.core.db import init_db
 from app.core.portfolio import calculate_positions, get_portfolio_summary
-from app.services import account_service, bond_service, dashboard_service, holding_service, reference_service, stock_ledger_service, transaction_service
+from app.services import account_service, bond_service, crypto_ledger_service, dashboard_service, holding_service, reference_service, stock_ledger_service, transaction_service
 
 
 SERVICE_MODULES = [
     account_service,
     bond_service,
+    crypto_ledger_service,
     dashboard_service,
     holding_service,
     reference_service,
@@ -95,8 +96,36 @@ def test_price_currency_and_cash_summary():
     print("   ✓ Price currency, cash FX, and warning handling are correct.")
 
 
+def test_accounts_table_is_pln_first_and_totaled():
+    print("2. Testing accounts table PLN conversion and total row...")
+    conn = fresh_db("test_mvp_accounts_table.duckdb")
+    conn.execute("""
+        INSERT INTO accounts (name, type, currency, balance, active)
+        VALUES
+            ('USD Cash', 'checking', 'USD', 100, TRUE),
+            ('Main PLN', 'checking', 'PLN', 250, TRUE)
+    """)
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES ('2026-03-31 10:00:00', 'USD', 'PLN', 4.0, 'test')
+    """)
+    conn.commit()
+    conn.close()
+
+    df, account_ids = account_service.get_accounts_df()
+    assert list(df.columns) == ["Account", "CCY", "Balance", "Balance (PLN)", "Delete"]
+    assert list(df["Account"]) == ["Main PLN", "USD Cash", "Total"]
+    assert df.iloc[0]["Balance (PLN)"] == "250.00"
+    assert df.iloc[1]["Balance (PLN)"] == "400.00"
+    assert df.iloc[2]["Balance (PLN)"] == "650.00"
+    assert df.iloc[0]["Delete"] == "🗑️"
+    assert df.iloc[2]["Delete"] == ""
+    assert len(account_ids) == 2
+    print("   ✓ Accounts table stays manual, PLN-first, and totals correctly.")
+
+
 def test_transaction_crud_and_oversell_protection():
-    print("2. Testing transaction CRUD, oversell validation, and timestamp ordering...")
+    print("3. Testing transaction CRUD, oversell validation, and timestamp ordering...")
     conn = fresh_db("test_mvp_transactions.duckdb")
 
     conn.execute("""
@@ -142,7 +171,7 @@ def test_transaction_crud_and_oversell_protection():
 
 
 def test_bonds_simple_ledger():
-    print("3. Testing bonds simple ledger...")
+    print("4. Testing bonds simple ledger...")
     conn = fresh_db("test_mvp_bonds.duckdb")
 
     # parse_series_code still works
@@ -224,7 +253,7 @@ def test_bonds_simple_ledger():
 
 
 def test_bond_rate_schedule_valuation():
-    print("4. Testing bond yearly-rate valuation logic...")
+    print("5. Testing bond yearly-rate valuation logic...")
     assert bond_service._round_to_half_zloty(Decimal("123.24")) == Decimal("123.0")
     assert bond_service._round_to_half_zloty(Decimal("123.25")) == Decimal("123.5")
     assert bond_service._round_to_half_zloty(Decimal("123.74")) == Decimal("123.5")
@@ -315,7 +344,7 @@ def test_bond_rate_schedule_valuation():
 
 
 def test_stock_search_adapter_and_ui_resolution():
-    print("5. Testing Yahoo stock search normalization and UI field population...")
+    print("6. Testing Yahoo stock search normalization and UI field population...")
 
     original_search = stocks_yfinance.yf.Search
     original_get_info = stocks_yfinance.get_info
@@ -365,8 +394,111 @@ def test_stock_search_adapter_and_ui_resolution():
     print("   ✓ Search results expose ticker, currency, and UI-ready metadata.")
 
 
+def test_crypto_search_and_ledger_rows():
+    print("7. Testing CoinGecko crypto search normalization, persistence, and ledger math...")
+    conn = fresh_db("test_mvp_crypto_ledger.duckdb")
+
+    original_search = crypto_coingecko.search_coin
+    original_service_search = crypto_ledger_service.search_crypto_candidates
+
+    try:
+        crypto_coingecko.search_coin = lambda query: [{
+            "id": "bitcoin",
+            "symbol": "btc",
+            "name": "Bitcoin",
+        }]
+
+        normalized_results, _ = crypto_ledger_service.search_crypto_candidates("BTC")
+        assert normalized_results[0]["label"] == "BTC | Bitcoin | bitcoin"
+
+        crypto_ledger_service.search_crypto_candidates = lambda query: (normalized_results, "✓ Found 1 CoinGecko matches.")
+        ui_payload = app_ui._search_crypto_candidates("BTC")
+        assert ui_payload[3] == "BTC"
+        assert ui_payload[4] == "PLN"
+        assert ui_payload[5] == "Bitcoin"
+        assert ui_payload[6] == "bitcoin"
+    finally:
+        crypto_coingecko.search_coin = original_search
+        crypto_ledger_service.search_crypto_candidates = original_service_search
+
+    blocked = crypto_ledger_service.save_crypto_order(
+        None, None, [], "2025-01-03", "buy", 0.5, 200000, 100, "should fail"
+    )
+    assert "Search and select" in blocked
+
+    resolved_result = {
+        "id": "bitcoin",
+        "symbol": "BTC",
+        "name": "Bitcoin",
+        "currency": "PLN",
+        "label": "BTC | Bitcoin | bitcoin",
+    }
+    result = crypto_ledger_service.save_crypto_order(
+        None, resolved_result["label"], [resolved_result], "2025-01-03", "buy", 0.5, 200000, 100, "first lot"
+    )
+    assert result.startswith("✓")
+    result = crypto_ledger_service.save_crypto_order(
+        None, resolved_result["label"], [resolved_result], "2025-02-03", "sell", 0.2, 240000, 50, "trim"
+    )
+    assert result.startswith("✓")
+    oversell = crypto_ledger_service.save_crypto_order(
+        None, resolved_result["label"], [resolved_result], "2025-03-03", "sell", 1, 250000, 0, "too much"
+    )
+    assert "exceed available quantity" in oversell
+
+    holding_row = conn.execute("""
+        SELECT id, currency, coingecko_id
+        FROM holdings
+        WHERE symbol = 'BTC'
+    """).fetchone()
+    holding_id = holding_row[0]
+    assert holding_row[1] == "PLN"
+    assert holding_row[2] == "bitcoin"
+
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES ('2025-03-01 10:00:00', 'USD', 'PLN', 4.0000, 'NBP')
+    """)
+    conn.execute("""
+        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
+        VALUES (?, '2025-03-01 10:00:00', 60000, 'USD', 'test')
+    """, [holding_id])
+    conn.commit()
+
+    df, row_ids = crypto_ledger_service.get_crypto_orders_df()
+    assert list(df.columns) == crypto_ledger_service.ORDER_COLUMNS
+    assert df.iloc[0]["B/S"] == "S"
+    assert df.iloc[1]["Date"] == "2025-01-03"
+    assert "BTC" in df.iloc[1]["Asset"]
+    assert "Bitcoin" in df.iloc[1]["Asset"]
+    assert df.iloc[1]["Spot Price"] == "200,000.00"
+    assert df.iloc[1]["CCY"] == "PLN"
+    assert df.iloc[1]["Fee"] == "100.00 PLN"
+    assert df.iloc[1]["Subtotal"] == "100,000.00 PLN"
+    assert df.iloc[1]["Current Value"] == "72,000.00 PLN"
+    assert df.iloc[1]["Change %"] == "19.88%"
+    assert df.iloc[2]["Date"] == "Total"
+    assert df.iloc[2]["Fee"] == "150.00 PLN"
+    assert df.iloc[2]["Subtotal"] == "148,000.00 PLN"
+    assert df.iloc[2]["Current Value"] == "72,000.00 PLN"
+    assert df.iloc[2]["Change %"] == "19.88%"
+    assert len(row_ids) == 2
+
+    loaded_choice = crypto_ledger_service.list_crypto_order_choices()[0]
+    loaded = crypto_ledger_service.load_crypto_order(loaded_choice)
+    assert loaded["resolved_symbol"] == "BTC"
+    assert loaded["trade_currency"] == "PLN"
+    assert loaded["coingecko_id"] == "bitcoin"
+
+    delete_result = crypto_ledger_service.delete_crypto_order_by_id(row_ids[0])
+    assert delete_result.startswith("✓")
+
+    conn.close()
+    print("   ✓ Crypto orders persist CoinGecko ids and compute PLN ledger values correctly.")
+
+
 def test_minor_unit_price_normalization():
-    print("6. Testing minor-unit Yahoo price normalization...")
+    print("8. Testing minor-unit Yahoo price normalization...")
     original_ticker = stocks_yfinance.yf.Ticker
 
     class FakeTicker:
@@ -404,7 +536,7 @@ def test_minor_unit_price_normalization():
 
 
 def test_stock_ledger_rows_and_fifo_fee_conversion():
-    print("7. Testing stock ledger rows, FIFO fee conversion, and current valuation...")
+    print("9. Testing stock ledger rows, FIFO fee conversion, and current valuation...")
     conn = fresh_db("test_mvp_stock_ledger.duckdb")
 
     resolved_result = {
@@ -518,7 +650,7 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
 
 
 def test_stock_ledger_fetches_and_caches_historical_fx_once():
-    print("8. Testing stock ledger historical FX fetch/caching and missing-price behavior...")
+    print("10. Testing stock ledger historical FX fetch/caching and missing-price behavior...")
     conn = fresh_db("test_mvp_stock_fx_cache.duckdb")
     conn.execute("""
         INSERT INTO holdings (asset_type, symbol, name, currency, exchange_label)
@@ -581,30 +713,30 @@ def test_stock_ledger_fetches_and_caches_historical_fx_once():
 
 
 def test_stock_save_helper_refreshes_dashboard_on_success():
-    print("9. Testing stock save helper refresh behavior...")
+    print("11. Testing stock save helper refresh behavior...")
     original_save = stock_ledger_service.save_stock_order
     original_refs = app_ui._reference_updates
     original_refresh = app_ui._refresh_dashboard
     original_payload = app_ui._dashboard_payload
 
     stock_ledger_service.save_stock_order = lambda *args, **kwargs: "✓ Added buy order for EUNM.DE"
-    app_ui._reference_updates = lambda: ("tx", "sym", "acc", "acct", "bond", "stock")
-    app_ui._refresh_dashboard = lambda limit: ("refresh", "overview", "positions", "crypto", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "txns", "settings")
-    app_ui._dashboard_payload = lambda limit: ("payload", "overview", "positions", "crypto", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "txns", "settings")
+    app_ui._reference_updates = lambda: ("acct", "bond", "crypto_order", "stock")
+    app_ui._refresh_dashboard = lambda limit=50: ("refresh", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "settings")
+    app_ui._dashboard_payload = lambda limit=50: ("payload", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "settings")
 
     try:
         success_result = app_ui._save_stock_order_and_refresh(
-            25, None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
+            None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
         )
         assert success_result[0].startswith("✓")
-        assert success_result[7] == "refresh"
+        assert success_result[5] == "refresh"
 
         stock_ledger_service.save_stock_order = lambda *args, **kwargs: "✗ nope"
         fail_result = app_ui._save_stock_order_and_refresh(
-            25, None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
+            None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
         )
         assert fail_result[0].startswith("✗")
-        assert fail_result[7] == "payload"
+        assert fail_result[5] == "payload"
     finally:
         stock_ledger_service.save_stock_order = original_save
         app_ui._reference_updates = original_refs
@@ -614,14 +746,49 @@ def test_stock_save_helper_refreshes_dashboard_on_success():
     print("   ✓ Successful stock saves trigger the refresh path.")
 
 
+def test_crypto_save_helper_refreshes_dashboard_on_success():
+    print("12. Testing crypto save helper refresh behavior...")
+    original_save = crypto_ledger_service.save_crypto_order
+    original_refs = app_ui._reference_updates
+    original_refresh = app_ui._refresh_dashboard
+    original_payload = app_ui._dashboard_payload
+
+    crypto_ledger_service.save_crypto_order = lambda *args, **kwargs: "✓ Added buy order for BTC"
+    app_ui._reference_updates = lambda: ("acct", "bond", "crypto_order", "stock")
+    app_ui._refresh_dashboard = lambda limit=50: ("refresh", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "settings")
+    app_ui._dashboard_payload = lambda limit=50: ("payload", "overview", "positions", "crypto", "crypto_ids", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "settings")
+
+    try:
+        success_result = app_ui._save_crypto_order_and_refresh(
+            None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100000, 0, ""
+        )
+        assert success_result[0].startswith("✓")
+        assert success_result[5] == "refresh"
+
+        crypto_ledger_service.save_crypto_order = lambda *args, **kwargs: "✗ nope"
+        fail_result = app_ui._save_crypto_order_and_refresh(
+            None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100000, 0, ""
+        )
+        assert fail_result[0].startswith("✗")
+        assert fail_result[5] == "payload"
+    finally:
+        crypto_ledger_service.save_crypto_order = original_save
+        app_ui._reference_updates = original_refs
+        app_ui._refresh_dashboard = original_refresh
+        app_ui._dashboard_payload = original_payload
+
+    print("   ✓ Successful crypto saves trigger the refresh path.")
+
+
 def test_fx_refresh_only_persists_used_currencies():
-    print("10. Testing FX refresh only persists used currencies...")
+    print("13. Testing FX refresh only persists used currencies and supports CoinGecko ids...")
     conn = fresh_db("test_mvp_fx_refresh_filter.duckdb")
     conn.execute("""
-        INSERT INTO holdings (asset_type, symbol, name, currency)
+        INSERT INTO holdings (asset_type, symbol, name, currency, coingecko_id)
         VALUES
-            ('stock', 'BMW', 'BMW AG', 'EUR'),
-            ('crypto', 'BTC', 'Bitcoin', 'USD')
+            ('stock', 'BMW', 'BMW AG', 'EUR', NULL),
+            ('crypto', 'BTC', 'Bitcoin', 'PLN', 'bitcoin'),
+            ('crypto', 'ETH', 'Ethereum', 'USD', NULL)
     """)
     conn.execute("""
         INSERT INTO accounts (name, type, currency, balance, active)
@@ -633,6 +800,7 @@ def test_fx_refresh_only_persists_used_currencies():
     conn.close()
 
     original_get_rates = dashboard_service.fx_nbp.get_current_rates
+    original_crypto_prices_by_ids = dashboard_service.crypto_coingecko.get_current_prices_by_ids
     original_crypto_prices = dashboard_service.crypto_coingecko.get_current_prices
     original_stock_price = dashboard_service.stocks_yfinance.get_current_price
 
@@ -643,16 +811,21 @@ def test_fx_refresh_only_persists_used_currencies():
         "GBP": Decimal("5.10"),
         "JPY": Decimal("0.025"),
     }
+    dashboard_service.crypto_coingecko.get_current_prices_by_ids = lambda ids, vs_currency="usd": {
+        "bitcoin": Decimal("30000"),
+    }
     dashboard_service.crypto_coingecko.get_current_prices = lambda symbols, vs_currency="usd": {
-        "BTC": Decimal("30000"),
+        "ETH": Decimal("2000"),
     }
     dashboard_service.stocks_yfinance.get_current_price = lambda symbol: Decimal("120")
 
     try:
         status = dashboard_service.refresh_market_data()
         assert "✓ Updated 3 FX rates from NBP" in status
+        assert "✓ Updated 2 crypto prices from CoinGecko" in status
     finally:
         dashboard_service.fx_nbp.get_current_rates = original_get_rates
+        dashboard_service.crypto_coingecko.get_current_prices_by_ids = original_crypto_prices_by_ids
         dashboard_service.crypto_coingecko.get_current_prices = original_crypto_prices
         dashboard_service.stocks_yfinance.get_current_price = original_stock_price
 
@@ -667,12 +840,20 @@ def test_fx_refresh_only_persists_used_currencies():
         """).fetchall()
     }
     assert saved_currencies == {"EUR", "GBP", "USD"}
+    saved_crypto_prices = verify_conn.execute("""
+        SELECT h.symbol, p.price
+        FROM prices p
+        JOIN holdings h ON h.id = p.holding_id
+        WHERE h.asset_type = 'crypto'
+        ORDER BY h.symbol
+    """).fetchall()
+    assert saved_crypto_prices == [("BTC", Decimal("30000.00000000")), ("ETH", Decimal("2000.00000000"))]
     verify_conn.close()
     print("   ✓ FX cache keeps only currencies actually used by the portfolio.")
 
 
 def test_schema_migration_adds_stock_ledger_columns():
-    print("11. Testing schema migration for stock ledger columns...")
+    print("14. Testing schema migration for ledger columns...")
     db_path = Path("data") / "test_mvp_schema_migration.duckdb"
     if db_path.exists():
         db_path.unlink()
@@ -710,39 +891,174 @@ def test_schema_migration_adds_stock_ledger_columns():
     migrated = init_db(str(db_path))
     holding_columns = {row[1] for row in migrated.execute("PRAGMA table_info('holdings')").fetchall()}
     transaction_columns = {row[1] for row in migrated.execute("PRAGMA table_info('transactions')").fetchall()}
+    migrated.execute("""
+        INSERT INTO holdings (asset_type, symbol, name, currency)
+        VALUES ('fund', 'TESTFUND', 'Test Fund', 'PLN')
+    """)
+    assert "coingecko_id" in holding_columns
     assert "exchange_label" in holding_columns
     assert "fee_currency" in transaction_columns
+    assert migrated.execute("SELECT COUNT(*) FROM holdings WHERE asset_type = 'fund'").fetchone()[0] == 1
     migrated.close()
     print("   ✓ Existing databases pick up the new stock ledger columns.")
 
 
 def test_dashboard_payload_smoke():
-    print("12. Testing dashboard payload smoke...")
+    print("15. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
     payload = dashboard_service.get_dashboard_payload(25)
-    assert len(payload) == 11
+    assert len(payload) == 12
     assert isinstance(payload[0], str)
-    assert payload[5] == []
+    assert payload[4] == []
+    assert payload[10] == []
     print("   ✓ Dashboard payload stays stable for the UI.")
+
+
+def test_overview_summary_markdown_is_readable():
+    print("16. Testing overview summary markdown formatting and cache timestamps...")
+    conn = fresh_db("test_mvp_overview_markdown.duckdb")
+    conn.execute("""
+        INSERT INTO holdings (asset_type, symbol, name, currency)
+        VALUES ('crypto', 'BTC', 'Bitcoin', 'PLN')
+    """)
+    holding_id = conn.execute("SELECT id FROM holdings WHERE symbol = 'BTC'").fetchone()[0]
+    conn.execute("""
+        INSERT INTO transactions (holding_id, ts, action, qty, price, fee, fee_currency)
+        VALUES (?, '2026-03-31 10:00:00', 'buy', 1, 100000, 500, 'PLN')
+    """, [holding_id])
+    conn.execute("""
+        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
+        VALUES (?, '2026-03-31 13:38:21.775253', 120000, 'PLN', 'test')
+    """, [holding_id])
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES ('2026-03-31 13:38:21.522473', 'USD', 'PLN', 4.0, 'test')
+    """)
+    conn.commit()
+    conn.close()
+
+    summary_md, positions_df = dashboard_service.get_overview_data()
+    assert "**Net Worth:** 120,000.00 PLN" in summary_md
+    assert "\n\n**Holdings Value:** 120,000.00 PLN" in summary_md
+    assert "\n\n**Bonds:** 0.00 PLN" in summary_md
+    assert "\n\n**Cash:** 0.00 PLN" in summary_md
+    assert "Unrealized P/L" not in summary_md
+    assert "UPL =" not in summary_md
+    assert "2026-03-31 13:38:21" in summary_md
+    assert "13:38:21.775253" not in summary_md
+    assert not positions_df.empty
+    print("   ✓ Overview summary is multiline and trims cache timestamps.")
+
+
+def test_overview_positions_table_is_pln_only():
+    print("17. Testing overview positions table formatting...")
+    conn = fresh_db("test_mvp_overview_positions.duckdb")
+    conn.execute("""
+        INSERT INTO holdings (asset_type, symbol, name, currency)
+        VALUES
+            ('stock', 'BMW', 'BMW AG', 'EUR'),
+            ('crypto', 'BTC', 'Bitcoin', 'PLN')
+    """)
+    stock_holding_id = conn.execute("SELECT id FROM holdings WHERE symbol = 'BMW'").fetchone()[0]
+    crypto_holding_id = conn.execute("SELECT id FROM holdings WHERE symbol = 'BTC'").fetchone()[0]
+
+    conn.execute("""
+        INSERT INTO transactions (holding_id, ts, action, qty, price, fee, fee_currency)
+        VALUES
+            (?, '2026-03-01 10:00:00', 'buy', 10, 100, 0, 'EUR'),
+            (?, '2026-03-01 10:00:00', 'buy', 0.12345678, 200000, 0, 'PLN')
+    """, [stock_holding_id, crypto_holding_id])
+    conn.execute("""
+        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
+        VALUES
+            (?, '2026-03-31 10:00:00', 120, 'USD', 'test'),
+            (?, '2026-03-31 10:00:00', 210000, 'PLN', 'test')
+    """, [stock_holding_id, crypto_holding_id])
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES
+            ('2026-03-31 10:00:00', 'USD', 'PLN', 4.0, 'test'),
+            ('2026-03-31 10:00:00', 'EUR', 'PLN', 4.5, 'test')
+    """)
+    conn.execute("""
+        INSERT INTO accounts (name, type, currency, balance, active)
+        VALUES
+            ('USD Cash 1', 'checking', 'USD', 100, TRUE),
+            ('USD Cash 2', 'checking', 'USD', 25, TRUE),
+            ('PLN Cash', 'checking', 'PLN', 50, TRUE)
+    """)
+    bond_result = bond_service.add_bond("COI0528", 50, datetime(2024, 1, 15), 5.75)
+    assert bond_result.startswith("✓")
+    bond_id = conn.execute("SELECT id FROM bonds WHERE series = 'COI0528'").fetchone()[0]
+    bond_service.append_bond_rate(bond_id, 7.15)
+    conn.commit()
+    conn.close()
+
+    df = dashboard_service.get_all_positions_df()
+    assert list(df.columns) == [
+        "Asset Type",
+        "Symbol",
+        "Quantity",
+        "Avg Cost (PLN)",
+        "Current Price (PLN)",
+        "Value (PLN)",
+        "UPL",
+        "Price Source",
+    ]
+    assert list(df["Symbol"]) == ["BTC", "COI", "BMW", "USD Cash", "PLN Cash", "Total"]
+    assert "Name" not in df.columns
+    assert df.iloc[0]["Quantity"] == "0.1235"
+    assert df.iloc[0]["Avg Cost (PLN)"] == "200,000.00"
+    assert df.iloc[0]["Current Price (PLN)"] == "210,000.00"
+    assert df.iloc[0]["UPL"] == "1,234.57"
+    assert df.iloc[1]["Asset Type"] == "BOND"
+    assert df.iloc[1]["Quantity"] == "50.0000"
+    assert df.iloc[1]["Avg Cost (PLN)"] == "100.00"
+    assert df.iloc[1]["Current Price (PLN)"] == "100.00"
+    assert df.iloc[1]["Value (PLN)"] == "5,000.00"
+    assert df.iloc[1]["UPL"] == "0.00"
+    assert df.iloc[1]["Price Source"] == "bond_model"
+    assert df.iloc[2]["Quantity"] == "10.0000"
+    assert df.iloc[2]["Avg Cost (PLN)"] == "450.00"
+    assert df.iloc[2]["Current Price (PLN)"] == "480.00"
+    assert df.iloc[2]["Value (PLN)"] == "4,800.00"
+    assert df.iloc[2]["UPL"] == "300.00"
+    assert df.iloc[3]["Asset Type"] == "CASH"
+    assert df.iloc[3]["Symbol"] == "USD Cash"
+    assert df.iloc[3]["Value (PLN)"] == "500.00"
+    assert df.iloc[3]["UPL"] == "0.00"
+    assert df.iloc[4]["Asset Type"] == "CASH"
+    assert df.iloc[4]["Symbol"] == "PLN Cash"
+    assert df.iloc[4]["Value (PLN)"] == "50.00"
+    assert df.iloc[4]["UPL"] == "0.00"
+    assert df.iloc[5]["Symbol"] == "Total"
+    assert df.iloc[5]["Value (PLN)"] == "36,275.92"
+    assert df.iloc[5]["UPL"] == "1,534.57"
+    print("   ✓ Overview positions table is PLN-only and compact.")
 
 
 def main():
     print("Testing MVP regressions\n")
     print("=" * 50)
     test_price_currency_and_cash_summary()
+    test_accounts_table_is_pln_first_and_totaled()
     test_transaction_crud_and_oversell_protection()
     test_bonds_simple_ledger()
     test_bond_rate_schedule_valuation()
     test_stock_search_adapter_and_ui_resolution()
+    test_crypto_search_and_ledger_rows()
     test_minor_unit_price_normalization()
     test_stock_ledger_rows_and_fifo_fee_conversion()
     test_stock_ledger_fetches_and_caches_historical_fx_once()
     test_stock_save_helper_refreshes_dashboard_on_success()
+    test_crypto_save_helper_refreshes_dashboard_on_success()
     test_fx_refresh_only_persists_used_currencies()
     test_schema_migration_adds_stock_ledger_columns()
     test_dashboard_payload_smoke()
+    test_overview_summary_markdown_is_readable()
+    test_overview_positions_table_is_pln_only()
     print("\n" + "=" * 50)
     print("✓ MVP regression test complete\n")
 

@@ -346,3 +346,64 @@ def get_bonds_total() -> Decimal:
         return total
     finally:
         conn.close()
+
+
+def get_bond_overview_rows() -> list[dict[str, Decimal | str]]:
+    """Aggregate standalone bonds by bond type for the overview table."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT id, series, qty, purchase_date, maturity
+            FROM bonds
+            ORDER BY series, purchase_date, id
+        """).fetchall()
+        if not rows:
+            return []
+
+        rate_schedules = _load_bond_rate_schedules(conn)
+        today = date.today()
+        grouped: dict[str, dict[str, Decimal | str]] = {}
+
+        for bond_id, series, qty, purchase_date, maturity in rows:
+            type_code, _ = parse_series_code(series)
+            actual_per_bond, _ = _calc_actual_per_bond(
+                series,
+                purchase_date,
+                rate_schedules.get(bond_id, {}),
+                today,
+                maturity,
+            )
+            actual_value = _round_to_half_zloty(qty * actual_per_bond)
+            nominal_value = Decimal(qty) * FACE_VALUE
+            bucket = grouped.setdefault(type_code, {
+                "Asset Type": "BOND",
+                "Symbol": type_code,
+                "_quantity": Decimal("0"),
+                "_nominal_value": Decimal("0"),
+                "_actual_value": Decimal("0"),
+            })
+            bucket["_quantity"] += Decimal(qty)
+            bucket["_nominal_value"] += nominal_value
+            bucket["_actual_value"] += actual_value
+
+        overview_rows = []
+        for bond_type in sorted(grouped):
+            bucket = grouped[bond_type]
+            quantity = bucket["_quantity"]
+            nominal_value = bucket["_nominal_value"]
+            actual_value = bucket["_actual_value"]
+            upl = actual_value - nominal_value
+            overview_rows.append({
+                "Asset Type": "BOND",
+                "Symbol": bond_type,
+                "Quantity": f"{quantity:.4f}",
+                "Avg Cost (PLN)": f"{FACE_VALUE:,.2f}",
+                "Current Price (PLN)": f"{(actual_value / quantity):,.2f}",
+                "Value (PLN)": f"{actual_value:,.2f}",
+                "UPL": f"{upl:,.2f}",
+                "Price Source": "bond_model",
+            })
+
+        return overview_rows
+    finally:
+        conn.close()

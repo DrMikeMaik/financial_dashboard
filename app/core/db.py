@@ -75,10 +75,11 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS holdings (
             id INTEGER PRIMARY KEY DEFAULT nextval('seq_holdings_id'),
-            asset_type VARCHAR NOT NULL CHECK (asset_type IN ('crypto', 'stock', 'etf', 'bond', 'cash')),
+            asset_type VARCHAR NOT NULL CHECK (asset_type IN ('crypto', 'stock', 'etf', 'fund', 'bond', 'cash')),
             symbol VARCHAR NOT NULL,
             name VARCHAR,
             currency VARCHAR NOT NULL,
+            coingecko_id VARCHAR,
             exchange_label VARCHAR,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(asset_type, symbol)
@@ -107,7 +108,7 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
         )
     """)
 
-    for col in ("exchange_label VARCHAR",):
+    for col in ("coingecko_id VARCHAR", "exchange_label VARCHAR"):
         try:
             conn.execute(f"ALTER TABLE holdings ADD COLUMN {col}")
         except duckdb.CatalogException:
@@ -153,35 +154,6 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
         )
     """)
 
-    # Bond metadata table
-    conn.execute("""
-        CREATE SEQUENCE IF NOT EXISTS seq_bond_meta_id START 1
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS bond_meta (
-            id INTEGER PRIMARY KEY DEFAULT nextval('seq_bond_meta_id'),
-            holding_id INTEGER NOT NULL UNIQUE,
-            face DECIMAL(18, 8) NOT NULL,
-            coupon_rate DECIMAL(8, 4) NOT NULL,
-            coupon_freq INTEGER NOT NULL,
-            maturity_date DATE NOT NULL,
-            issuer VARCHAR,
-            bond_type VARCHAR,
-            rate_type VARCHAR,
-            series_code VARCHAR,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (holding_id) REFERENCES holdings(id)
-        )
-    """)
-
-    # Migration: add new columns to existing bond_meta tables
-    for col in ("bond_type VARCHAR", "rate_type VARCHAR", "series_code VARCHAR"):
-        try:
-            conn.execute(f"ALTER TABLE bond_meta ADD COLUMN {col}")
-        except duckdb.CatalogException:
-            pass
-
-
     # Standalone bonds table (simple ledger, no FK to holdings)
     conn.execute("""
         CREATE SEQUENCE IF NOT EXISTS seq_bonds_id START 1
@@ -196,22 +168,6 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
             current_value DECIMAL(18, 8),
             maturity DATE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # Bond period interest rates table for the dormant normalized bond_meta flow
-    conn.execute("""
-        CREATE SEQUENCE IF NOT EXISTS seq_bond_period_rates_id START 1
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS bond_period_rates (
-            id INTEGER PRIMARY KEY DEFAULT nextval('seq_bond_period_rates_id'),
-            bond_meta_id INTEGER NOT NULL,
-            period_num INTEGER NOT NULL,
-            rate DECIMAL(8, 4) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (bond_meta_id) REFERENCES bond_meta(id),
-            UNIQUE(bond_meta_id, period_num)
         )
     """)
 
@@ -230,6 +186,12 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
             UNIQUE(bond_id, period_num)
         )
     """)
+
+    # Remove dormant normalized bond schema from older local databases.
+    conn.execute("DROP TABLE IF EXISTS bond_period_rates")
+    conn.execute("DROP TABLE IF EXISTS bond_meta")
+    conn.execute("DROP SEQUENCE IF EXISTS seq_bond_period_rates_id")
+    conn.execute("DROP SEQUENCE IF EXISTS seq_bond_meta_id")
 
     conn.commit()
 

@@ -1,22 +1,29 @@
 """Dashboard read models and refresh orchestration."""
 from datetime import datetime
+from decimal import Decimal
 
 import pandas as pd
 
 from app.adapters import crypto_coingecko, fx_nbp, stocks_yfinance
 from app.core.db import get_connection, get_setting
 from app.core.portfolio import calculate_positions, get_portfolio_summary
-from app.services.account_service import get_accounts_df
+from app.services.account_service import get_account_overview_rows, get_accounts_df
 from app.services import bond_service
 from app.services.bond_service import get_bonds_df
+from app.services.crypto_ledger_service import get_crypto_orders_df
 from app.services.stock_ledger_service import get_stock_orders_df
-from app.services.transaction_service import get_transactions_df
 
 
-def _collect_relevant_fx_currencies(conn, holdings: list[tuple[int, str, str, str]]) -> set[str]:
+def _format_cache_timestamp(value: datetime | None) -> str:
+    if value is None:
+        return "n/a"
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _collect_relevant_fx_currencies(conn, holdings: list[tuple[int, str, str, str, str | None]]) -> set[str]:
     currencies = {
         (currency or "").strip().upper()
-        for _, _, _, currency in holdings
+        for _, _, _, currency, _ in holdings
         if (currency or "").strip().upper() and (currency or "").strip().upper() != "PLN"
     }
 
@@ -40,7 +47,7 @@ def _collect_relevant_fx_currencies(conn, holdings: list[tuple[int, str, str, st
         if normalized and normalized != "PLN":
             currencies.add(normalized)
 
-    if any(asset_type == "crypto" for _, asset_type, _, _ in holdings):
+    if any(asset_type == "crypto" for _, asset_type, _, _, _ in holdings):
         currencies.add("USD")
 
     return currencies
@@ -52,7 +59,7 @@ def refresh_market_data() -> str:
     try:
         messages = []
         holdings = conn.execute("""
-            SELECT id, asset_type, symbol, currency
+            SELECT id, asset_type, symbol, currency, coingecko_id
             FROM holdings
             ORDER BY asset_type, symbol
         """).fetchall()
@@ -79,23 +86,29 @@ def refresh_market_data() -> str:
             except Exception as exc:
                 messages.append(f"⚠ FX rates update failed: {exc}")
 
-        crypto_holdings = [(row[0], row[2]) for row in holdings if row[1] == "crypto"]
+        crypto_holdings = [(row[0], row[2], row[4]) for row in holdings if row[1] == "crypto"]
         stock_holdings = [(row[0], row[2], row[3]) for row in holdings if row[1] in {"stock", "etf"}]
 
         if crypto_holdings:
             try:
-                symbols = [symbol for _, symbol in crypto_holdings]
-                prices = crypto_coingecko.get_current_prices(symbols, vs_currency="usd")
+                prices_by_id = crypto_coingecko.get_current_prices_by_ids(
+                    [coingecko_id for _, _, coingecko_id in crypto_holdings if coingecko_id],
+                    vs_currency="usd",
+                )
+                legacy_symbols = [symbol for _, symbol, coingecko_id in crypto_holdings if not coingecko_id]
+                legacy_prices = crypto_coingecko.get_current_prices(legacy_symbols, vs_currency="usd")
                 now = datetime.now()
-                for holding_id, symbol in crypto_holdings:
-                    price = prices.get(symbol.upper())
+                updated = 0
+                for holding_id, symbol, coingecko_id in crypto_holdings:
+                    price = prices_by_id.get(coingecko_id) if coingecko_id else legacy_prices.get(symbol.upper())
                     if price is None:
                         continue
                     conn.execute("""
                         INSERT INTO prices (id, holding_id, ts, price, price_ccy, source)
                         VALUES (nextval('seq_prices_id'), ?, ?, ?, 'USD', 'CoinGecko')
                     """, [holding_id, now, float(price)])
-                messages.append(f"✓ Updated {len(prices)} crypto prices from CoinGecko")
+                    updated += 1
+                messages.append(f"✓ Updated {updated} crypto prices from CoinGecko")
             except Exception as exc:
                 messages.append(f"⚠ Crypto price update failed: {exc}")
 
@@ -137,23 +150,49 @@ def _positions_to_dataframe(asset_types: set[str] | None = None) -> pd.DataFrame
     if asset_types is not None:
         positions = [position for position in positions if position.holding.asset_type in asset_types]
 
-    if not positions:
-        return pd.DataFrame(columns=["Asset Type", "Symbol", "Name", "Quantity", "Avg Cost", "Current Price", "Value (PLN)", "Unrealized P/L", "Price Source"])
+    include_bonds = asset_types is None or "bond" in asset_types
+    include_accounts = asset_types is None or "cash" in asset_types
+    bond_rows = bond_service.get_bond_overview_rows() if include_bonds else []
+    account_rows = get_account_overview_rows() if include_accounts else []
 
-    return pd.DataFrame([
+    if not positions and not bond_rows and not account_rows:
+        return pd.DataFrame(columns=["Asset Type", "Symbol", "Quantity", "Avg Cost (PLN)", "Current Price (PLN)", "Value (PLN)", "UPL", "Price Source"])
+
+    positions.sort(key=lambda position: position.value_pln, reverse=True)
+    position_rows = [
         {
             "Asset Type": position.holding.asset_type.upper(),
             "Symbol": position.holding.symbol,
-            "Name": position.holding.name or "",
-            "Quantity": f"{position.qty:.8f}",
-            "Avg Cost": f"{position.avg_cost:.2f} {position.holding.currency}",
-            "Current Price": f"{position.current_price:.2f} {position.current_price_ccy}",
+            "Quantity": f"{position.qty:.4f}",
+            "Avg Cost (PLN)": f"{((position.value_pln - position.unrealized_pl) / position.qty):,.2f}",
+            "Current Price (PLN)": f"{(position.value_pln / position.qty):,.2f}",
             "Value (PLN)": f"{position.value_pln:,.2f}",
-            "Unrealized P/L": f"{position.unrealized_pl:,.2f}",
+            "UPL": f"{position.unrealized_pl:,.2f}",
             "Price Source": position.price_source or "",
         }
         for position in positions
-    ])
+    ]
+
+    rows = position_rows + bond_rows + account_rows
+    rows.sort(
+        key=lambda row: Decimal(str(row["Value (PLN)"]).replace(",", "")),
+        reverse=True,
+    )
+
+    total_value_pln = sum(Decimal(str(row["Value (PLN)"]).replace(",", "")) for row in rows)
+    total_upl = sum(Decimal(str(row["UPL"]).replace(",", "")) for row in rows)
+    rows.append({
+        "Asset Type": "",
+        "Symbol": "Total",
+        "Quantity": "",
+        "Avg Cost (PLN)": "",
+        "Current Price (PLN)": "",
+        "Value (PLN)": f"{total_value_pln:,.2f}",
+        "UPL": f"{total_upl:,.2f}",
+        "Price Source": "",
+    })
+
+    return pd.DataFrame(rows)
 
 
 def get_all_positions_df() -> pd.DataFrame:
@@ -193,7 +232,6 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
     conn = get_connection()
     try:
         summary = get_portfolio_summary(conn)
-        positions = calculate_positions(conn)
     finally:
         conn.close()
 
@@ -205,17 +243,19 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
         warnings_md = "\n".join(f"- {warning}" for warning in summary["warnings"])
         warnings_md = f"\n### Warnings\n{warnings_md}\n"
 
-    latest_price_ts = summary["latest_price_ts"] or "n/a"
-    latest_fx_ts = summary["latest_fx_ts"] or "n/a"
+    latest_price_ts = _format_cache_timestamp(summary["latest_price_ts"])
+    latest_fx_ts = _format_cache_timestamp(summary["latest_fx_ts"])
 
     summary_text = f"""
 ## Portfolio Summary
 
 **Net Worth:** {net_worth:,.2f} PLN
+
 **Holdings Value:** {summary['holdings_value']:,.2f} PLN
+
 **Bonds:** {bonds_total:,.2f} PLN
+
 **Cash:** {summary['cash']:,.2f} PLN
-**Unrealized P/L:** {summary['unrealized_pl']:,.2f} PLN
 
 ### Cache Status
 - **Latest price cache:** {latest_price_ts}
@@ -223,28 +263,28 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
 {warnings_md}
 """.strip()
 
-    if not positions:
-        return summary_text, pd.DataFrame()
-
     return summary_text, get_all_positions_df()
 
 
 def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "") -> tuple:
     """Return all dashboard outputs used by the top-level refresh."""
     overview_md, positions_df = get_overview_data()
+    crypto_orders_df, crypto_order_ids = get_crypto_orders_df()
     stock_orders_df, stock_order_ids = get_stock_orders_df()
     bonds_dataframe, bonds_ids = get_bonds_df()
+    accounts_dataframe, account_ids = get_accounts_df()
     return (
         refresh_status,
         overview_md,
         positions_df,
-        get_crypto_holdings_df(),
+        crypto_orders_df,
+        crypto_order_ids,
         stock_orders_df,
         stock_order_ids,
         bonds_dataframe,
         bonds_ids,
-        get_accounts_df(),
-        get_transactions_df(transaction_limit),
+        accounts_dataframe,
+        account_ids,
         get_settings_markdown(),
     )
 

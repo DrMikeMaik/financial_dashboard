@@ -9,6 +9,7 @@ class AssetType(str, Enum):
     CRYPTO = "crypto"
     STOCK = "stock"
     ETF = "etf"
+    FUND = "fund"
     BOND = "bond"
     CASH = "cash"
 
@@ -40,6 +41,7 @@ class Holding:
     symbol: str
     name: str | None
     currency: str
+    coingecko_id: str | None = None
     exchange_label: str | None = None
     created_at: datetime | None = None
 
@@ -78,30 +80,6 @@ class FXRate:
     quote_ccy: str
     rate: Decimal
     source: str
-    created_at: datetime | None = None
-
-
-@dataclass
-class BondMeta:
-    id: int | None
-    holding_id: int
-    face: Decimal
-    coupon_rate: Decimal
-    coupon_freq: int
-    maturity_date: date
-    issuer: str | None = None
-    bond_type: str | None = None
-    rate_type: str | None = None
-    series_code: str | None = None
-    created_at: datetime | None = None
-
-
-@dataclass
-class BondPeriodRate:
-    id: int | None
-    bond_meta_id: int
-    period_num: int
-    rate: Decimal
     created_at: datetime | None = None
 
 
