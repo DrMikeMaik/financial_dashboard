@@ -30,14 +30,18 @@ def add_stock_holding(symbol: str, currency: str = "USD") -> str:
     conn = get_connection()
     try:
         info = stocks_yfinance.get_info(symbol.strip())
+        if not info.get("found"):
+            return f"✗ Yahoo Finance could not resolve symbol: {symbol.strip().upper()}"
+
         name = info.get("name") or symbol.strip().upper()
         detected_currency = info.get("currency") or currency.strip().upper()
+        exchange_label = info.get("exchange_label")
         asset_type = "etf" if info.get("type") == "ETF" else "stock"
 
         conn.execute("""
-            INSERT INTO holdings (id, asset_type, symbol, name, currency)
-            VALUES (nextval('seq_holdings_id'), ?, ?, ?, ?)
-        """, [asset_type, symbol.strip().upper(), name, detected_currency])
+            INSERT INTO holdings (id, asset_type, symbol, name, currency, exchange_label)
+            VALUES (nextval('seq_holdings_id'), ?, ?, ?, ?, ?)
+        """, [asset_type, symbol.strip().upper(), name, detected_currency, exchange_label])
         conn.commit()
         return f"✓ Added {asset_type} holding: {symbol.strip().upper()} ({name})"
     except Exception as exc:

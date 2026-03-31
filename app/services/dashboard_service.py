@@ -1,6 +1,5 @@
 """Dashboard read models and refresh orchestration."""
 from datetime import datetime
-from decimal import Decimal
 
 import pandas as pd
 
@@ -10,7 +9,41 @@ from app.core.portfolio import calculate_positions, get_portfolio_summary
 from app.services.account_service import get_accounts_df
 from app.services import bond_service
 from app.services.bond_service import get_bonds_df
+from app.services.stock_ledger_service import get_stock_orders_df
 from app.services.transaction_service import get_transactions_df
+
+
+def _collect_relevant_fx_currencies(conn, holdings: list[tuple[int, str, str, str]]) -> set[str]:
+    currencies = {
+        (currency or "").strip().upper()
+        for _, _, _, currency in holdings
+        if (currency or "").strip().upper() and (currency or "").strip().upper() != "PLN"
+    }
+
+    account_rows = conn.execute("""
+        SELECT DISTINCT currency
+        FROM accounts
+        WHERE active = TRUE
+    """).fetchall()
+    for (currency,) in account_rows:
+        normalized = (currency or "").strip().upper()
+        if normalized and normalized != "PLN":
+            currencies.add(normalized)
+
+    fee_rows = conn.execute("""
+        SELECT DISTINCT fee_currency
+        FROM transactions
+        WHERE fee_currency IS NOT NULL
+    """).fetchall()
+    for (currency,) in fee_rows:
+        normalized = (currency or "").strip().upper()
+        if normalized and normalized != "PLN":
+            currencies.add(normalized)
+
+    if any(asset_type == "crypto" for _, asset_type, _, _ in holdings):
+        currencies.add("USD")
+
+    return currencies
 
 
 def refresh_market_data() -> str:
@@ -23,23 +56,28 @@ def refresh_market_data() -> str:
             FROM holdings
             ORDER BY asset_type, symbol
         """).fetchall()
+        relevant_fx_currencies = _collect_relevant_fx_currencies(conn, holdings)
 
-        if not holdings:
-            return "No holdings found to refresh."
+        if not holdings and not relevant_fx_currencies:
+            return "No holdings or foreign-currency accounts found to refresh."
 
-        try:
-            fx_rates = fx_nbp.get_current_rates("PLN")
-            now = datetime.now()
-            for currency, rate in fx_rates.items():
-                if currency == "PLN":
-                    continue
-                conn.execute("""
-                    INSERT INTO fx_rates (id, ts, base_ccy, quote_ccy, rate, source)
-                    VALUES (nextval('seq_fx_rates_id'), ?, ?, 'PLN', ?, 'NBP')
-                """, [now, currency, float(rate)])
-            messages.append(f"✓ Updated {len(fx_rates)} FX rates from NBP")
-        except Exception as exc:
-            messages.append(f"⚠ FX rates update failed: {exc}")
+        if relevant_fx_currencies:
+            try:
+                fx_rates = fx_nbp.get_current_rates("PLN")
+                now = datetime.now()
+                updated_fx = 0
+                for currency in sorted(relevant_fx_currencies):
+                    rate = fx_rates.get(currency)
+                    if rate is None:
+                        continue
+                    conn.execute("""
+                        INSERT INTO fx_rates (id, ts, base_ccy, quote_ccy, rate, source)
+                        VALUES (nextval('seq_fx_rates_id'), ?, ?, 'PLN', ?, 'NBP')
+                    """, [now, currency, float(rate)])
+                    updated_fx += 1
+                messages.append(f"✓ Updated {updated_fx} FX rates from NBP")
+            except Exception as exc:
+                messages.append(f"⚠ FX rates update failed: {exc}")
 
         crypto_holdings = [(row[0], row[2]) for row in holdings if row[1] == "crypto"]
         stock_holdings = [(row[0], row[2], row[3]) for row in holdings if row[1] in {"stock", "etf"}]
@@ -194,13 +232,15 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
 def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "") -> tuple:
     """Return all dashboard outputs used by the top-level refresh."""
     overview_md, positions_df = get_overview_data()
+    stock_orders_df, stock_order_ids = get_stock_orders_df()
     bonds_dataframe, bonds_ids = get_bonds_df()
     return (
         refresh_status,
         overview_md,
         positions_df,
         get_crypto_holdings_df(),
-        get_stock_holdings_df(),
+        stock_orders_df,
+        stock_order_ids,
         bonds_dataframe,
         bonds_ids,
         get_accounts_df(),

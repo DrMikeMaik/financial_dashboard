@@ -3,7 +3,15 @@ from datetime import datetime
 
 import gradio as gr
 
-from app.services import account_service, bond_service, dashboard_service, holding_service, reference_service, transaction_service
+from app.services import (
+    account_service,
+    bond_service,
+    dashboard_service,
+    holding_service,
+    reference_service,
+    stock_ledger_service,
+    transaction_service,
+)
 
 
 ACCOUNT_TYPE_CHOICES = ["checking", "savings", "investment", "credit", "other"]
@@ -27,6 +35,7 @@ def _reference_updates() -> tuple:
         gr.update(choices=reference_service.list_account_names(), value=None),
         gr.update(choices=reference_service.list_account_choices(), value=None),
         gr.update(choices=reference_service.list_bond_choices(), value=None),
+        gr.update(choices=stock_ledger_service.list_stock_order_choices(), value=None),
     )
 
 
@@ -47,6 +56,118 @@ def _clear_transaction_form() -> tuple:
 
 def _clear_account_form() -> tuple:
     return None, "", None, "PLN", 0.0, True, ""
+
+
+def _clear_stock_form() -> tuple:
+    return (
+        gr.update(value=None),
+        "",
+        [],
+        gr.update(choices=[], value=None),
+        "",
+        "",
+        "",
+        "",
+        datetime.now().replace(hour=0, minute=0, second=0, microsecond=0),
+        "buy",
+        None,
+        None,
+        0.0,
+        "",
+        "",
+    )
+
+
+def _search_stock_candidates(query: str | None) -> tuple:
+    results, message = stock_ledger_service.search_stock_candidates(query or "")
+    choices = [result["label"] for result in results]
+
+    if not results:
+        return (
+            gr.update(value=None),
+            [],
+            gr.update(choices=[], value=None),
+            "",
+            "",
+            "",
+            "",
+            message,
+        )
+
+    selected_choice = choices[0] if len(choices) == 1 else None
+    selected = stock_ledger_service.resolve_search_choice(selected_choice, results)
+    return (
+        gr.update(value=None),
+        results,
+        gr.update(choices=choices, value=selected_choice),
+        selected["symbol"] if selected else "",
+        selected["currency"] if selected else "",
+        selected["name"] if selected else "",
+        selected["exchange_label"] if selected else "",
+        message,
+    )
+
+
+def _apply_stock_search_choice(selected_choice: str | None, results_state) -> tuple:
+    selected = stock_ledger_service.resolve_search_choice(selected_choice, results_state)
+    if selected is None:
+        return "", "", "", "", ""
+    return (
+        selected["symbol"],
+        selected["currency"] or "",
+        selected["name"] or "",
+        selected["exchange_label"] or "",
+        f"Selected {selected['symbol']}.",
+    )
+
+
+def _load_stock_order_form(order_choice: str | None) -> tuple:
+    payload = stock_ledger_service.load_stock_order(order_choice)
+    choices = [result["label"] for result in payload["results_state"]]
+    return (
+        payload["search_query"],
+        payload["results_state"],
+        gr.update(choices=choices, value=payload["selected_choice"]),
+        payload["resolved_symbol"],
+        payload["trade_currency"],
+        payload["security_name"],
+        payload["exchange_label"],
+        payload["timestamp_text"],
+        payload["action"],
+        payload["quantity"],
+        payload["price"],
+        payload["commission"],
+        payload["note"],
+        payload["message"],
+    )
+
+
+def _save_stock_order_and_refresh(
+    limit,
+    order_choice: str | None,
+    selected_search_choice: str | None,
+    results_state,
+    timestamp_text,
+    action,
+    quantity,
+    price,
+    commission_pln,
+    note: str,
+) -> tuple:
+    result = stock_ledger_service.save_stock_order(
+        order_choice,
+        selected_search_choice,
+        results_state,
+        timestamp_text,
+        action,
+        quantity,
+        price,
+        commission_pln,
+        note,
+    )
+    reference_updates = _reference_updates()
+    dashboard_payload = _refresh_dashboard(limit) if result.startswith("✓") else _dashboard_payload(limit)
+    return (result, *reference_updates, *dashboard_payload)
 
 
 def _append_bond_rate_from_choice(bond_choice: str | None, rate) -> str:
@@ -91,14 +212,59 @@ def create_ui():
                 crypto_output = gr.Textbox(label="Crypto Result", interactive=False)
 
             with gr.Tab("Stocks & ETFs"):
-                stocks_df = gr.DataFrame(label="Stock & ETF Holdings")
+                stock_order_ids_state = gr.State([])
+                stocks_df = gr.DataFrame(
+                    label="Stock & ETF Orders",
+                    wrap=True,
+                    line_breaks=True,
+                    datatype=["str", "markdown", "str", "str", "str", "str", "str", "str", "str", "str", "str", "str"],
+                )
 
-                gr.Markdown("### Add Stock / ETF Holding")
+                gr.Markdown("### Stock / ETF Order Editor")
+                stock_search_results_state = gr.State([])
+                stock_order_select = gr.Dropdown(
+                    label="Existing Stock / ETF Order",
+                    choices=stock_ledger_service.list_stock_order_choices(),
+                    allow_custom_value=False,
+                    value=None,
+                )
+
                 with gr.Row():
-                    stock_symbol = gr.Textbox(label="Symbol", scale=2)
-                    stock_currency = gr.Textbox(label="Currency Override", value="USD", scale=1)
+                    stock_search_query = gr.Textbox(label="Search Yahoo Finance", placeholder="e.g. EUNM or iShares MSCI Emerging Markets", scale=3)
+                    stock_search_btn = gr.Button("Search", scale=1)
 
-                stock_save_btn = gr.Button("Save Stock / ETF Holding")
+                stock_result_select = gr.Dropdown(
+                    label="Search Results",
+                    choices=[],
+                    allow_custom_value=False,
+                    value=None,
+                )
+
+                with gr.Row():
+                    stock_resolved_symbol = gr.Textbox(label="Resolved Yahoo Symbol", interactive=False, scale=1)
+                    stock_trade_currency = gr.Textbox(label="Trade Currency", interactive=False, scale=1)
+                    stock_security_name = gr.Textbox(label="Security Name", interactive=False, scale=2)
+                    stock_exchange_label = gr.Textbox(label="Exchange", interactive=False, scale=2)
+
+                with gr.Row():
+                    stock_ts = gr.DateTime(
+                        label="Date",
+                        value=datetime.now().replace(hour=0, minute=0, second=0, microsecond=0),
+                        include_time=False,
+                        type="datetime",
+                        scale=2,
+                    )
+                    stock_action = gr.Dropdown(label="Action", choices=["buy", "sell"], value="buy", scale=1)
+
+                with gr.Row():
+                    stock_qty = gr.Number(label="Qty", scale=1)
+                    stock_price = gr.Number(label="Price", scale=1)
+                    stock_fee = gr.Number(label="Commission (PLN)", value=0.0, scale=1)
+
+                stock_note = gr.Textbox(label="Note")
+                with gr.Row():
+                    stock_save_btn = gr.Button("Save Stock / ETF Order", variant="primary")
+                    stock_clear_btn = gr.Button("Clear")
                 stock_output = gr.Textbox(label="Stock Result", interactive=False)
 
             with gr.Tab("Bonds"):
@@ -211,6 +377,7 @@ def create_ui():
             positions_df,
             crypto_df,
             stocks_df,
+            stock_order_ids_state,
             bonds_df,
             bond_ids_state,
             accounts_df,
@@ -224,6 +391,7 @@ def create_ui():
             txn_account,
             account_select,
             bond_select,
+            stock_order_select,
         ]
 
         refresh_btn.click(
@@ -257,9 +425,71 @@ def create_ui():
             outputs=dashboard_outputs,
         )
 
+        stock_order_select.change(
+            fn=_load_stock_order_form,
+            inputs=stock_order_select,
+            outputs=[
+                stock_search_query,
+                stock_search_results_state,
+                stock_result_select,
+                stock_resolved_symbol,
+                stock_trade_currency,
+                stock_security_name,
+                stock_exchange_label,
+                stock_ts,
+                stock_action,
+                stock_qty,
+                stock_price,
+                stock_fee,
+                stock_note,
+                stock_output,
+            ],
+        )
+
+        stock_search_btn.click(
+            fn=_search_stock_candidates,
+            inputs=stock_search_query,
+            outputs=[
+                stock_order_select,
+                stock_search_results_state,
+                stock_result_select,
+                stock_resolved_symbol,
+                stock_trade_currency,
+                stock_security_name,
+                stock_exchange_label,
+                stock_output,
+            ],
+        )
+
+        stock_result_select.change(
+            fn=_apply_stock_search_choice,
+            inputs=[stock_result_select, stock_search_results_state],
+            outputs=[
+                stock_resolved_symbol,
+                stock_trade_currency,
+                stock_security_name,
+                stock_exchange_label,
+                stock_output,
+            ],
+        )
+
         stock_save_btn.click(
-            fn=holding_service.add_stock_holding,
-            inputs=[stock_symbol, stock_currency],
+            fn=_save_stock_order_and_refresh,
+            inputs=[txn_limit, stock_order_select, stock_result_select, stock_search_results_state, stock_ts, stock_action, stock_qty, stock_price, stock_fee, stock_note],
+            outputs=[stock_output, *refresh_reference_outputs, *dashboard_outputs],
+        )
+
+        def _handle_stock_table_click(evt: gr.SelectData, stock_order_ids):
+            if evt.value != "🗑️":
+                return gr.skip()
+            row = evt.index[0]
+            if row >= len(stock_order_ids):
+                return gr.skip()
+            return stock_ledger_service.delete_stock_order_by_id(stock_order_ids[row])
+
+        stocks_df.select(
+            fn=_handle_stock_table_click,
+            inputs=stock_order_ids_state,
             outputs=stock_output,
         ).then(
             fn=_reference_updates,
@@ -268,6 +498,27 @@ def create_ui():
             fn=_dashboard_payload,
             inputs=txn_limit,
             outputs=dashboard_outputs,
+        )
+
+        stock_clear_btn.click(
+            fn=_clear_stock_form,
+            outputs=[
+                stock_order_select,
+                stock_search_query,
+                stock_search_results_state,
+                stock_result_select,
+                stock_resolved_symbol,
+                stock_trade_currency,
+                stock_security_name,
+                stock_exchange_label,
+                stock_ts,
+                stock_action,
+                stock_qty,
+                stock_price,
+                stock_fee,
+                stock_note,
+                stock_output,
+            ],
         )
 
         bond_add_btn.click(

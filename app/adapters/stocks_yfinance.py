@@ -5,6 +5,9 @@ from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
 
+SUPPORTED_QUOTE_TYPES = {"ETF", "EQUITY"}
+
+
 def get_current_price(symbol: str) -> Optional[Decimal]:
     """
     Fetch current price for a stock/ETF.
@@ -17,18 +20,44 @@ def get_current_price(symbol: str) -> Optional[Decimal]:
     """
     try:
         ticker = yf.Ticker(symbol)
-        info = ticker.info
+        try:
+            info = ticker.info or {}
+        except Exception:
+            info = {}
+        try:
+            fast_info = dict(ticker.fast_info or {})
+        except Exception:
+            fast_info = {}
+
+        currency_code, minor_unit_scale = _normalize_currency_code(
+            info.get("currency") or fast_info.get("currency")
+        )
+
+        hist = ticker.history(period="5d")
+        recent_close = None
+        if not hist.empty and "Close" in hist.columns:
+            close_values = [Decimal(str(value)) for value in hist["Close"].dropna().tolist()]
+            if len(close_values) >= 2:
+                recent_close = close_values[-2]
+            elif close_values:
+                recent_close = close_values[-1]
 
         # Try multiple price fields (Yahoo API is inconsistent)
-        price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
+        price = (
+            info.get("currentPrice")
+            or info.get("regularMarketPrice")
+            or info.get("previousClose")
+            or fast_info.get("lastPrice")
+            or fast_info.get("regularMarketPreviousClose")
+        )
 
         if price:
-            return Decimal(str(price))
+            return _normalize_market_price(price, minor_unit_scale, recent_close=recent_close)
 
         # Fallback: get latest close from history
-        hist = ticker.history(period="1d")
         if not hist.empty and "Close" in hist.columns:
-            return Decimal(str(hist["Close"].iloc[-1]))
+            latest_close = Decimal(str(hist["Close"].iloc[-1]))
+            return _normalize_market_price(latest_close, minor_unit_scale, recent_close=recent_close)
 
         return None
 
@@ -67,21 +96,177 @@ def get_info(symbol: str) -> Dict:
     Returns:
         Dict with name, currency, exchange, etc.
     """
+    base = {
+        "symbol": symbol.upper(),
+        "name": None,
+        "currency": None,
+        "exchange": None,
+        "exchange_display": None,
+        "exchange_label": None,
+        "type": None,
+        "found": False,
+    }
+
     try:
         ticker = yf.Ticker(symbol)
-        info = ticker.info
+        try:
+            info = ticker.info or {}
+        except Exception:
+            info = {}
+
+        try:
+            fast_info = dict(ticker.fast_info or {})
+        except Exception:
+            fast_info = {}
+
+        name = info.get("longName") or info.get("shortName") or info.get("displayName")
+        currency, _ = _normalize_currency_code(info.get("currency") or fast_info.get("currency"))
+        quote_type = info.get("quoteType")
+        exchange = info.get("exchange")
+        exchange_display = info.get("exchDisp") or info.get("fullExchangeName") or exchange
+        exchange_label = build_exchange_label({
+            "exchDisp": exchange_display,
+            "exchange": exchange,
+            "currency": currency,
+        })
+
+        found = any([name, currency, quote_type, exchange_display])
+        if not found:
+            hist = ticker.history(period="5d")
+            found = not hist.empty
 
         return {
             "symbol": symbol.upper(),
-            "name": info.get("longName") or info.get("shortName"),
-            "currency": info.get("currency", "USD"),
-            "exchange": info.get("exchange"),
-            "type": info.get("quoteType"),  # EQUITY, ETF, MUTUALFUND, etc.
+            "name": name,
+            "currency": currency,
+            "exchange": exchange,
+            "exchange_display": exchange_display,
+            "exchange_label": exchange_label,
+            "type": quote_type,
+            "found": found,
         }
 
     except Exception as e:
         print(f"Error fetching info for {symbol}: {e}")
-        return {"symbol": symbol.upper(), "currency": "USD"}
+        return base
+
+
+def build_exchange_label(info: Dict) -> str | None:
+    """Build a compact exchange/market label for display in the stock ledger."""
+    exchange = info.get("exchDisp") or info.get("exchange_display") or info.get("fullExchangeName") or info.get("exchange") or info.get("market")
+    currency = info.get("currency")
+
+    parts = [part for part in (exchange, currency) if part]
+    return " ".join(parts) if parts else None
+
+
+def search_instruments(query: str, max_results: int = 8) -> List[Dict]:
+    """Search Yahoo Finance for stock/ETF symbols and enrich results with currency metadata."""
+    normalized_query = (query or "").strip()
+    if not normalized_query:
+        return []
+
+    try:
+        search = yf.Search(normalized_query, max_results=max_results)
+        quotes = getattr(search, "quotes", None) or []
+    except Exception as e:
+        print(f"Error searching for stock/ETF: {e}")
+        return []
+
+    results = []
+    seen = set()
+
+    for quote in quotes:
+        symbol = (quote.get("symbol") or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+
+        quote_type = (quote.get("quoteType") or quote.get("typeDisp") or "").upper()
+        if quote_type and quote_type not in SUPPORTED_QUOTE_TYPES:
+            continue
+
+        info = get_info(symbol)
+        resolved_type = (info.get("type") or quote_type or "").upper()
+        if resolved_type and resolved_type not in SUPPORTED_QUOTE_TYPES:
+            continue
+
+        currency = (quote.get("currency") or info.get("currency") or "").upper() or None
+        name = quote.get("longname") or quote.get("shortname") or info.get("name") or symbol
+        exchange_display = quote.get("exchDisp") or info.get("exchange_display") or quote.get("exchange") or info.get("exchange")
+        result = {
+            "symbol": symbol,
+            "name": name,
+            "currency": currency,
+            "exchange": info.get("exchange") or quote.get("exchange"),
+            "exchange_display": exchange_display,
+            "exchange_label": build_exchange_label({
+                "exchDisp": exchange_display,
+                "exchange": info.get("exchange") or quote.get("exchange"),
+                "currency": currency,
+            }),
+            "type": resolved_type or None,
+        }
+        results.append(result)
+        seen.add(symbol)
+
+    return results
+
+
+def resolve_exact_symbol(symbol: str) -> Dict | None:
+    """Resolve an exact Yahoo ticker for stock/ETF entry when search has no matches."""
+    normalized_symbol = (symbol or "").strip().upper()
+    if not normalized_symbol:
+        return None
+
+    info = get_info(normalized_symbol)
+    if not info.get("found"):
+        return None
+
+    quote_type = (info.get("type") or "").upper()
+    if quote_type and quote_type not in SUPPORTED_QUOTE_TYPES:
+        return None
+
+    return {
+        "symbol": normalized_symbol,
+        "name": info.get("name") or normalized_symbol,
+        "currency": info.get("currency"),
+        "exchange": info.get("exchange"),
+        "exchange_display": info.get("exchange_display") or info.get("exchange"),
+        "exchange_label": info.get("exchange_label"),
+        "type": quote_type or None,
+    }
+
+
+def _normalize_currency_code(raw_currency: str | None) -> tuple[str | None, Decimal]:
+    """Map Yahoo minor-unit currency codes to display currencies and scales."""
+    if not raw_currency:
+        return None, Decimal("1")
+
+    if raw_currency == "GBp":
+        return "GBP", Decimal("0.01")
+    if raw_currency == "ZAc":
+        return "ZAR", Decimal("0.01")
+
+    return raw_currency.upper(), Decimal("1")
+
+
+def _normalize_market_price(
+    price,
+    scale: Decimal,
+    recent_close: Decimal | None = None,
+) -> Decimal:
+    """Normalize a market price when Yahoo mixes minor and major currency units."""
+    normalized_price = Decimal(str(price))
+    if scale == Decimal("1"):
+        return normalized_price
+
+    if recent_close is not None and recent_close > 0 and normalized_price > recent_close * Decimal("20"):
+        return normalized_price * scale
+
+    if normalized_price >= Decimal("1000"):
+        return normalized_price * scale
+
+    return normalized_price
 
 
 def get_historical_prices(

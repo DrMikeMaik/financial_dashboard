@@ -5,10 +5,13 @@ from pathlib import Path
 
 import duckdb
 
+from app import ui as app_ui
+from app.adapters import stocks_yfinance
+from app.core import portfolio as portfolio_core
 from app.core.bonds import parse_series_code
 from app.core.db import init_db
-from app.core.portfolio import calculate_positions, get_latest_price_info, get_portfolio_summary
-from app.services import account_service, bond_service, dashboard_service, holding_service, reference_service, transaction_service
+from app.core.portfolio import calculate_positions, get_portfolio_summary
+from app.services import account_service, bond_service, dashboard_service, holding_service, reference_service, stock_ledger_service, transaction_service
 
 
 SERVICE_MODULES = [
@@ -17,6 +20,7 @@ SERVICE_MODULES = [
     dashboard_service,
     holding_service,
     reference_service,
+    stock_ledger_service,
     transaction_service,
 ]
 
@@ -310,14 +314,417 @@ def test_bond_rate_schedule_valuation():
     print("   ✓ Yearly rate schedules value EDO and COI differently.")
 
 
+def test_stock_search_adapter_and_ui_resolution():
+    print("5. Testing Yahoo stock search normalization and UI field population...")
+
+    original_search = stocks_yfinance.yf.Search
+    original_get_info = stocks_yfinance.get_info
+    original_service_search = stock_ledger_service.search_stock_candidates
+
+    class FakeSearch:
+        def __init__(self, query: str, max_results: int = 8):
+            self.quotes = [{
+                "symbol": "EUNM.DE",
+                "longname": "iShares MSCI EM UCITS ETF USD (Acc)",
+                "exchDisp": "XETRA",
+                "quoteType": "ETF",
+            }]
+
+    stocks_yfinance.yf.Search = FakeSearch
+    stocks_yfinance.get_info = lambda symbol: {
+        "symbol": symbol.upper(),
+        "name": "iShares MSCI EM UCITS ETF USD (Acc)",
+        "currency": "EUR",
+        "exchange": "GER",
+        "exchange_display": "XETRA",
+        "exchange_label": "XETRA EUR",
+        "type": "ETF",
+        "found": True,
+    }
+    try:
+        results = stocks_yfinance.search_instruments("EUNM")
+        assert results[0]["symbol"] == "EUNM.DE"
+        assert results[0]["currency"] == "EUR"
+        assert results[0]["exchange_display"] == "XETRA"
+        assert results[0]["type"] == "ETF"
+
+        normalized_results, _ = stock_ledger_service.search_stock_candidates("EUNM")
+        assert normalized_results[0]["label"] == "EUNM.DE | iShares MSCI EM UCITS ETF USD (Acc) | XETRA | EUR"
+
+        stock_ledger_service.search_stock_candidates = lambda query: (normalized_results, "✓ Found 1 Yahoo stock/ETF matches.")
+        ui_payload = app_ui._search_stock_candidates("EUNM")
+        assert ui_payload[3] == "EUNM.DE"
+        assert ui_payload[4] == "EUR"
+        assert ui_payload[5] == "iShares MSCI EM UCITS ETF USD (Acc)"
+        assert ui_payload[6] == "XETRA EUR"
+    finally:
+        stocks_yfinance.yf.Search = original_search
+        stocks_yfinance.get_info = original_get_info
+        stock_ledger_service.search_stock_candidates = original_service_search
+
+    print("   ✓ Search results expose ticker, currency, and UI-ready metadata.")
+
+
+def test_minor_unit_price_normalization():
+    print("6. Testing minor-unit Yahoo price normalization...")
+    original_ticker = stocks_yfinance.yf.Ticker
+
+    class FakeTicker:
+        def __init__(self, symbol: str):
+            self.info = {
+                "currency": "GBp",
+                "regularMarketPrice": 6682.0,
+                "quoteType": "EQUITY",
+                "exchange": "LSE",
+                "fullExchangeName": "LSE",
+                "longName": "iShares Physical Gold ETC",
+            }
+            self.fast_info = {
+                "currency": "GBp",
+                "regularMarketPreviousClose": 65.97,
+            }
+
+        def history(self, period="5d", start=None, end=None):
+            import pandas as pd
+
+            return pd.DataFrame({
+                "Close": [64.0, 66.019997, 63.82, 65.970001, 6682.0],
+            })
+
+    stocks_yfinance.yf.Ticker = FakeTicker
+    try:
+        info = stocks_yfinance.get_info("SGLN.L")
+        assert info["currency"] == "GBP"
+        price = stocks_yfinance.get_current_price("SGLN.L")
+        assert price == Decimal("66.82")
+    finally:
+        stocks_yfinance.yf.Ticker = original_ticker
+
+    print("   ✓ Minor-unit Yahoo prices are normalized to major currency values.")
+
+
+def test_stock_ledger_rows_and_fifo_fee_conversion():
+    print("7. Testing stock ledger rows, FIFO fee conversion, and current valuation...")
+    conn = fresh_db("test_mvp_stock_ledger.duckdb")
+
+    resolved_result = {
+        "symbol": "EUNM.DE",
+        "name": "EUNM GR ETF",
+        "currency": "EUR",
+        "exchange": "GER",
+        "exchange_display": "XETRA",
+        "exchange_label": "XETRA EUR",
+        "type": "ETF",
+        "label": "EUNM.DE | EUNM GR ETF | XETRA | EUR",
+    }
+
+    blocked = stock_ledger_service.save_stock_order(
+        None, None, [], "2025-01-03", "buy", 10, 100, 20, "should fail"
+    )
+    assert "Search and select" in blocked
+
+    result = stock_ledger_service.save_stock_order(
+        None, resolved_result["label"], [resolved_result], "2025-01-03", "buy", 10, 100, 20, "first lot"
+    )
+    assert result.startswith("✓")
+    result = stock_ledger_service.save_stock_order(
+        None, resolved_result["label"], [resolved_result], "2025-02-03", "sell", 4, 120, 8, "partial exit"
+    )
+    assert result.startswith("✓")
+
+    holding_id = conn.execute("""
+        SELECT id
+        FROM holdings
+        WHERE symbol = 'EUNM.DE'
+    """).fetchone()[0]
+    exchange_label = conn.execute("""
+        SELECT exchange_label
+        FROM holdings
+        WHERE id = ?
+    """, [holding_id]).fetchone()[0]
+    assert exchange_label == "XETRA EUR"
+    saved_timestamps = conn.execute("""
+        SELECT ts
+        FROM transactions
+        WHERE holding_id = ?
+        ORDER BY ts ASC
+    """, [holding_id]).fetchall()
+    assert saved_timestamps[0][0].strftime("%Y-%m-%d %H:%M:%S") == "2025-01-03 23:59:59"
+    assert saved_timestamps[1][0].strftime("%Y-%m-%d %H:%M:%S") == "2025-02-03 23:59:59"
+
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES
+            ('2025-01-03 00:00:00', 'EUR', 'PLN', 4.0000, 'NBP_HIST'),
+            ('2025-02-03 00:00:00', 'EUR', 'PLN', 4.1000, 'NBP_HIST'),
+            ('2025-03-01 10:00:00', 'EUR', 'PLN', 4.2000, 'NBP')
+    """)
+    conn.execute("""
+        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
+        VALUES (?, '2025-03-01 10:00:00', 130, 'EUR', 'test')
+    """, [holding_id])
+    conn.commit()
+
+    df, row_ids = stock_ledger_service.get_stock_orders_df()
+    assert list(df.columns) == stock_ledger_service.ORDER_COLUMNS
+    assert df.iloc[0]["B/S"] == "S"
+    assert df.iloc[0]["Current Value"] == ""
+    assert df.iloc[1]["Date"] == "2025-01-03"
+    assert "EUNM.DE" in df.iloc[1]["Symbol"]
+    assert "XETRA EUR" in df.iloc[1]["Symbol"]
+    assert df.iloc[1]["Price"] == "100.00"
+    assert df.iloc[1]["CCY"] == "EUR"
+    assert df.iloc[1]["FX PLN"] == "4.0000"
+    assert df.iloc[1]["Trade Value"] == "4,000.00 PLN"
+    assert df.iloc[1]["Current Value"] == "3,276.00 PLN"
+    assert df.iloc[1]["Change %"] == "35.82%"
+    assert df.iloc[1]["Delete"] == "🗑️"
+    assert df.iloc[2]["Date"] == "Total"
+    assert df.iloc[2]["Comm."] == "28.00 PLN"
+    assert df.iloc[2]["Trade Value"] == "5,968.00 PLN"
+    assert df.iloc[2]["Current Value"] == "3,276.00 PLN"
+    assert df.iloc[2]["Change %"] == "35.82%"
+    assert df.iloc[2]["Delete"] == ""
+    assert len(row_ids) == 2
+
+    position = calculate_positions(conn)[0]
+    expected_avg_cost = Decimal("100") + (Decimal("20") / Decimal("4")) / Decimal("10")
+    assert abs(position.avg_cost - expected_avg_cost) < Decimal("0.00000001")
+
+    delete_result = stock_ledger_service.delete_stock_order_by_id(row_ids[0])
+    assert delete_result.startswith("✓")
+    df_after_delete, remaining_ids = stock_ledger_service.get_stock_orders_df()
+    assert len(df_after_delete) == 2
+    assert df_after_delete.iloc[1]["Date"] == "Total"
+    assert len(remaining_ids) == 1
+    assert conn.execute("SELECT COUNT(*) FROM holdings WHERE id = ?", [holding_id]).fetchone()[0] == 1
+
+    loaded_choice = stock_ledger_service.list_stock_order_choices()[0]
+    loaded = stock_ledger_service.load_stock_order(loaded_choice)
+    assert loaded["resolved_symbol"] == "EUNM.DE"
+    assert loaded["trade_currency"] == "EUR"
+    assert loaded["timestamp_text"].date().isoformat() == "2025-01-03"
+
+    final_delete_result = stock_ledger_service.delete_stock_order_by_id(remaining_ids[0])
+    assert final_delete_result.startswith("✓")
+    final_df, final_ids = stock_ledger_service.get_stock_orders_df()
+    assert final_df.empty
+    assert final_ids == []
+    assert conn.execute("SELECT COUNT(*) FROM holdings WHERE id = ?", [holding_id]).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM prices WHERE holding_id = ?", [holding_id]).fetchone()[0] == 0
+
+    conn.close()
+    print("   ✓ Stock ledger rows and FIFO fee conversion behave as expected.")
+
+
+def test_stock_ledger_fetches_and_caches_historical_fx_once():
+    print("8. Testing stock ledger historical FX fetch/caching and missing-price behavior...")
+    conn = fresh_db("test_mvp_stock_fx_cache.duckdb")
+    conn.execute("""
+        INSERT INTO holdings (asset_type, symbol, name, currency, exchange_label)
+        VALUES ('stock', 'BMW', 'BMW AG', 'EUR', 'XETRA EUR')
+    """)
+    holding_id = conn.execute("SELECT id FROM holdings WHERE symbol = 'BMW'").fetchone()[0]
+    conn.execute("""
+        INSERT INTO transactions (holding_id, ts, action, qty, price, fee, fee_currency)
+        VALUES (?, '2025-01-15 10:00:00', 'buy', 2, 80, 10, 'PLN')
+    """, [holding_id])
+    conn.commit()
+
+    original_get_rate_on_date = portfolio_core.fx_nbp.get_rate_on_date
+    call_counter = {"count": 0}
+    original_apply_stock_choice = app_ui._apply_stock_search_choice
+
+    def fake_get_rate_on_date(base_ccy: str, quote_ccy: str, target_date):
+        assert base_ccy == "EUR"
+        assert quote_ccy == "PLN"
+        assert target_date == date(2025, 1, 15)
+        call_counter["count"] += 1
+        return Decimal("4.2500")
+
+    portfolio_core.fx_nbp.get_rate_on_date = fake_get_rate_on_date
+    try:
+        df, _ = stock_ledger_service.get_stock_orders_df()
+        assert df.iloc[0]["FX PLN"] == "4.2500"
+        assert df.iloc[0]["Current Value"] == ""
+        df, _ = stock_ledger_service.get_stock_orders_df()
+        assert df.iloc[0]["FX PLN"] == "4.2500"
+        ui_selection = app_ui._apply_stock_search_choice(
+            "BMW | BMW AG | XETRA | EUR",
+            [{
+                "symbol": "BMW",
+                "name": "BMW AG",
+                "currency": "EUR",
+                "exchange_display": "XETRA",
+                "exchange_label": "XETRA EUR",
+                "type": "EQUITY",
+                "label": "BMW | BMW AG | XETRA | EUR",
+            }],
+        )
+        assert ui_selection[0] == "BMW"
+        assert ui_selection[1] == "EUR"
+    finally:
+        portfolio_core.fx_nbp.get_rate_on_date = original_get_rate_on_date
+
+    cached_rows = conn.execute("""
+        SELECT COUNT(*)
+        FROM fx_rates
+        WHERE base_ccy = 'EUR' AND quote_ccy = 'PLN' AND source = 'NBP_HIST'
+    """).fetchone()[0]
+    assert call_counter["count"] == 1
+    assert cached_rows == 1
+
+    summary = get_portfolio_summary(conn)
+    assert any("Missing cached prices" in warning for warning in summary["warnings"])
+    conn.close()
+    print("   ✓ Historical FX gets cached once and missing live prices keep today-value blank.")
+
+
+def test_stock_save_helper_refreshes_dashboard_on_success():
+    print("9. Testing stock save helper refresh behavior...")
+    original_save = stock_ledger_service.save_stock_order
+    original_refs = app_ui._reference_updates
+    original_refresh = app_ui._refresh_dashboard
+    original_payload = app_ui._dashboard_payload
+
+    stock_ledger_service.save_stock_order = lambda *args, **kwargs: "✓ Added buy order for EUNM.DE"
+    app_ui._reference_updates = lambda: ("tx", "sym", "acc", "acct", "bond", "stock")
+    app_ui._refresh_dashboard = lambda limit: ("refresh", "overview", "positions", "crypto", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "txns", "settings")
+    app_ui._dashboard_payload = lambda limit: ("payload", "overview", "positions", "crypto", "stocks", "stock_ids", "bonds", "bond_ids", "accounts", "txns", "settings")
+
+    try:
+        success_result = app_ui._save_stock_order_and_refresh(
+            25, None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
+        )
+        assert success_result[0].startswith("✓")
+        assert success_result[7] == "refresh"
+
+        stock_ledger_service.save_stock_order = lambda *args, **kwargs: "✗ nope"
+        fail_result = app_ui._save_stock_order_and_refresh(
+            25, None, "choice", [{"label": "choice"}], "2025-01-03", "buy", 1, 100, 0, ""
+        )
+        assert fail_result[0].startswith("✗")
+        assert fail_result[7] == "payload"
+    finally:
+        stock_ledger_service.save_stock_order = original_save
+        app_ui._reference_updates = original_refs
+        app_ui._refresh_dashboard = original_refresh
+        app_ui._dashboard_payload = original_payload
+
+    print("   ✓ Successful stock saves trigger the refresh path.")
+
+
+def test_fx_refresh_only_persists_used_currencies():
+    print("10. Testing FX refresh only persists used currencies...")
+    conn = fresh_db("test_mvp_fx_refresh_filter.duckdb")
+    conn.execute("""
+        INSERT INTO holdings (asset_type, symbol, name, currency)
+        VALUES
+            ('stock', 'BMW', 'BMW AG', 'EUR'),
+            ('crypto', 'BTC', 'Bitcoin', 'USD')
+    """)
+    conn.execute("""
+        INSERT INTO accounts (name, type, currency, balance, active)
+        VALUES
+            ('GBP Cash', 'checking', 'GBP', 100, TRUE),
+            ('PLN Cash', 'checking', 'PLN', 50, TRUE)
+    """)
+    conn.commit()
+    conn.close()
+
+    original_get_rates = dashboard_service.fx_nbp.get_current_rates
+    original_crypto_prices = dashboard_service.crypto_coingecko.get_current_prices
+    original_stock_price = dashboard_service.stocks_yfinance.get_current_price
+
+    dashboard_service.fx_nbp.get_current_rates = lambda quote_currency="PLN": {
+        "PLN": Decimal("1.0"),
+        "EUR": Decimal("4.20"),
+        "USD": Decimal("4.00"),
+        "GBP": Decimal("5.10"),
+        "JPY": Decimal("0.025"),
+    }
+    dashboard_service.crypto_coingecko.get_current_prices = lambda symbols, vs_currency="usd": {
+        "BTC": Decimal("30000"),
+    }
+    dashboard_service.stocks_yfinance.get_current_price = lambda symbol: Decimal("120")
+
+    try:
+        status = dashboard_service.refresh_market_data()
+        assert "✓ Updated 3 FX rates from NBP" in status
+    finally:
+        dashboard_service.fx_nbp.get_current_rates = original_get_rates
+        dashboard_service.crypto_coingecko.get_current_prices = original_crypto_prices
+        dashboard_service.stocks_yfinance.get_current_price = original_stock_price
+
+    verify_conn = duckdb.connect("data/test_mvp_fx_refresh_filter.duckdb")
+    saved_currencies = {
+        row[0]
+        for row in verify_conn.execute("""
+            SELECT DISTINCT base_ccy
+            FROM fx_rates
+            WHERE source = 'NBP'
+            ORDER BY base_ccy
+        """).fetchall()
+    }
+    assert saved_currencies == {"EUR", "GBP", "USD"}
+    verify_conn.close()
+    print("   ✓ FX cache keeps only currencies actually used by the portfolio.")
+
+
+def test_schema_migration_adds_stock_ledger_columns():
+    print("11. Testing schema migration for stock ledger columns...")
+    db_path = Path("data") / "test_mvp_schema_migration.duckdb"
+    if db_path.exists():
+        db_path.unlink()
+
+    conn = duckdb.connect(str(db_path))
+    conn.execute("CREATE TABLE settings (key VARCHAR PRIMARY KEY, value VARCHAR NOT NULL)")
+    conn.execute("CREATE SEQUENCE seq_holdings_id START 1")
+    conn.execute("""
+        CREATE TABLE holdings (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_holdings_id'),
+            asset_type VARCHAR NOT NULL,
+            symbol VARCHAR NOT NULL,
+            name VARCHAR,
+            currency VARCHAR NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE SEQUENCE seq_transactions_id START 1")
+    conn.execute("""
+        CREATE TABLE transactions (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_transactions_id'),
+            holding_id INTEGER NOT NULL,
+            account_id INTEGER,
+            ts TIMESTAMP NOT NULL,
+            action VARCHAR NOT NULL,
+            qty DECIMAL(18, 8),
+            price DECIMAL(18, 8),
+            fee DECIMAL(18, 8) DEFAULT 0,
+            note VARCHAR,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.close()
+
+    migrated = init_db(str(db_path))
+    holding_columns = {row[1] for row in migrated.execute("PRAGMA table_info('holdings')").fetchall()}
+    transaction_columns = {row[1] for row in migrated.execute("PRAGMA table_info('transactions')").fetchall()}
+    assert "exchange_label" in holding_columns
+    assert "fee_currency" in transaction_columns
+    migrated.close()
+    print("   ✓ Existing databases pick up the new stock ledger columns.")
+
+
 def test_dashboard_payload_smoke():
-    print("5. Testing dashboard payload smoke...")
+    print("12. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
     payload = dashboard_service.get_dashboard_payload(25)
-    assert len(payload) == 10
+    assert len(payload) == 11
     assert isinstance(payload[0], str)
+    assert payload[5] == []
     print("   ✓ Dashboard payload stays stable for the UI.")
 
 
@@ -328,6 +735,13 @@ def main():
     test_transaction_crud_and_oversell_protection()
     test_bonds_simple_ledger()
     test_bond_rate_schedule_valuation()
+    test_stock_search_adapter_and_ui_resolution()
+    test_minor_unit_price_normalization()
+    test_stock_ledger_rows_and_fifo_fee_conversion()
+    test_stock_ledger_fetches_and_caches_historical_fx_once()
+    test_stock_save_helper_refreshes_dashboard_on_success()
+    test_fx_refresh_only_persists_used_currencies()
+    test_schema_migration_adds_stock_ledger_columns()
     test_dashboard_payload_smoke()
     print("\n" + "=" * 50)
     print("✓ MVP regression test complete\n")

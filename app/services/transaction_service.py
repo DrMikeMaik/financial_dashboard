@@ -36,6 +36,15 @@ def _resolve_holding_id(conn, symbol: str | None) -> int | None:
     return row[0] if row else None
 
 
+def _get_holding_currency(conn, holding_id: int) -> str | None:
+    row = conn.execute("""
+        SELECT currency
+        FROM holdings
+        WHERE id = ?
+    """, [holding_id]).fetchone()
+    return row[0] if row else None
+
+
 def _resolve_account_id(conn, account_name: str | None) -> int | None:
     if not account_name or not str(account_name).strip():
         return None
@@ -209,6 +218,7 @@ def save_transaction(
         account_id = _resolve_account_id(conn, account_name)
         if account_name and account_id is None:
             return f"✗ Account not found: {account_name}"
+        holding_currency = _get_holding_currency(conn, holding_id)
 
         timestamp = _parse_timestamp(timestamp_text)
         qty_dec = _to_decimal(quantity)
@@ -233,9 +243,9 @@ def save_transaction(
 
         if transaction_id is None:
             conn.execute("""
-                INSERT INTO transactions (id, holding_id, account_id, ts, action, qty, price, fee, note)
-                VALUES (nextval('seq_transactions_id'), ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [holding_id, account_id, timestamp, action, qty_dec, price_dec, fee_dec, note or None])
+                INSERT INTO transactions (id, holding_id, account_id, ts, action, qty, price, fee, fee_currency, note)
+                VALUES (nextval('seq_transactions_id'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [holding_id, account_id, timestamp, action, qty_dec, price_dec, fee_dec, holding_currency, note or None])
             conn.commit()
             return f"✓ Added {action} transaction for {symbol.strip().upper()}"
 
