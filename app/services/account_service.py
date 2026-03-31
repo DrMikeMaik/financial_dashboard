@@ -13,7 +13,7 @@ def _parse_account_choice(account_choice: str | None) -> int | None:
     return int(str(account_choice).split("|", 1)[0].strip())
 
 
-def get_accounts_df() -> pd.DataFrame:
+def get_accounts_df() -> tuple[pd.DataFrame, list[int]]:
     """Get all accounts as a PLN-first snapshot table."""
     conn = get_connection()
     try:
@@ -58,6 +58,42 @@ def get_accounts_df() -> pd.DataFrame:
             "Delete": "",
         })
         return pd.DataFrame(data), account_ids
+    finally:
+        conn.close()
+
+
+def get_account_overview_rows() -> list[dict[str, str]]:
+    """Build PLN-only cash rows for the overview positions table."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT name, currency, balance, active
+            FROM accounts
+            ORDER BY CASE WHEN currency = 'PLN' THEN 0 ELSE 1 END, name
+        """).fetchall()
+
+        overview_rows = []
+        for name, currency, balance, active in rows:
+            if not active:
+                continue
+            balance_dec = Decimal(str(balance or 0))
+            fx_rate, found, _, _ = get_fx_rate_info(conn, currency, "PLN")
+            if not found and currency != "PLN":
+                continue
+
+            balance_pln = balance_dec * fx_rate
+            overview_rows.append({
+                "Asset Type": "CASH",
+                "Symbol": name,
+                "Quantity": "",
+                "Avg Cost (PLN)": "",
+                "Current Price (PLN)": "",
+                "Value (PLN)": f"{balance_pln:,.2f}",
+                "UPL": "0.00",
+                "Price Source": "account_balance",
+            })
+
+        return overview_rows
     finally:
         conn.close()
 

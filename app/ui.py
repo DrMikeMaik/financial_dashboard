@@ -14,6 +14,7 @@ from app.services import (
 
 
 ACCOUNT_TYPE_CHOICES = ["checking", "savings", "investment", "credit", "other"]
+CURRENCY_CHOICES = ["PLN", "USD", "EUR", "GBP"]
 
 
 def _dashboard_payload(limit: int = 50) -> tuple:
@@ -449,7 +450,7 @@ def create_ui():
                 with gr.Row():
                     acc_name = gr.Textbox(label="Name", scale=2)
                     acc_type = gr.Dropdown(label="Type", choices=ACCOUNT_TYPE_CHOICES, allow_custom_value=True, value=None, scale=1)
-                    acc_currency = gr.Textbox(label="Currency", value="PLN", scale=1)
+                    acc_currency = gr.Dropdown(label="Currency", choices=CURRENCY_CHOICES, value="PLN", allow_custom_value=False, scale=1)
                     acc_balance = gr.Number(label="Balance", value=0.0, scale=1)
 
                 with gr.Row():

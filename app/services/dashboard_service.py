@@ -7,7 +7,7 @@ import pandas as pd
 from app.adapters import crypto_coingecko, fx_nbp, stocks_yfinance
 from app.core.db import get_connection, get_setting
 from app.core.portfolio import calculate_positions, get_portfolio_summary
-from app.services.account_service import get_accounts_df
+from app.services.account_service import get_account_overview_rows, get_accounts_df
 from app.services import bond_service
 from app.services.bond_service import get_bonds_df
 from app.services.crypto_ledger_service import get_crypto_orders_df
@@ -151,9 +151,11 @@ def _positions_to_dataframe(asset_types: set[str] | None = None) -> pd.DataFrame
         positions = [position for position in positions if position.holding.asset_type in asset_types]
 
     include_bonds = asset_types is None or "bond" in asset_types
+    include_accounts = asset_types is None or "cash" in asset_types
     bond_rows = bond_service.get_bond_overview_rows() if include_bonds else []
+    account_rows = get_account_overview_rows() if include_accounts else []
 
-    if not positions and not bond_rows:
+    if not positions and not bond_rows and not account_rows:
         return pd.DataFrame(columns=["Asset Type", "Symbol", "Quantity", "Avg Cost (PLN)", "Current Price (PLN)", "Value (PLN)", "UPL", "Price Source"])
 
     positions.sort(key=lambda position: position.value_pln, reverse=True)
@@ -171,7 +173,7 @@ def _positions_to_dataframe(asset_types: set[str] | None = None) -> pd.DataFrame
         for position in positions
     ]
 
-    rows = position_rows + bond_rows
+    rows = position_rows + bond_rows + account_rows
     rows.sort(
         key=lambda row: Decimal(str(row["Value (PLN)"]).replace(",", "")),
         reverse=True,
@@ -230,7 +232,6 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
     conn = get_connection()
     try:
         summary = get_portfolio_summary(conn)
-        positions = calculate_positions(conn)
     finally:
         conn.close()
 
@@ -261,9 +262,6 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
 - **Latest FX cache:** {latest_fx_ts}
 {warnings_md}
 """.strip()
-
-    if not positions:
-        return summary_text, pd.DataFrame()
 
     return summary_text, get_all_positions_df()
 
