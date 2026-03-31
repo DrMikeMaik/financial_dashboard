@@ -83,30 +83,6 @@ class FXRate:
 
 
 @dataclass
-class BondMeta:
-    id: int | None
-    holding_id: int
-    face: Decimal
-    coupon_rate: Decimal
-    coupon_freq: int
-    maturity_date: date
-    issuer: str | None = None
-    bond_type: str | None = None
-    rate_type: str | None = None
-    series_code: str | None = None
-    created_at: datetime | None = None
-
-
-@dataclass
-class BondPeriodRate:
-    id: int | None
-    bond_meta_id: int
-    period_num: int
-    rate: Decimal
-    created_at: datetime | None = None
-
-
-@dataclass
 class Position:
     """Computed position for a holding."""
     holding: Holding
