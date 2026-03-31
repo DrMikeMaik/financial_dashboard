@@ -96,8 +96,36 @@ def test_price_currency_and_cash_summary():
     print("   ✓ Price currency, cash FX, and warning handling are correct.")
 
 
+def test_accounts_table_is_pln_first_and_totaled():
+    print("2. Testing accounts table PLN conversion and total row...")
+    conn = fresh_db("test_mvp_accounts_table.duckdb")
+    conn.execute("""
+        INSERT INTO accounts (name, type, currency, balance, active)
+        VALUES
+            ('USD Cash', 'checking', 'USD', 100, TRUE),
+            ('Main PLN', 'checking', 'PLN', 250, TRUE)
+    """)
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES ('2026-03-31 10:00:00', 'USD', 'PLN', 4.0, 'test')
+    """)
+    conn.commit()
+    conn.close()
+
+    df, account_ids = account_service.get_accounts_df()
+    assert list(df.columns) == ["Account", "CCY", "Balance", "Balance (PLN)", "Delete"]
+    assert list(df["Account"]) == ["Main PLN", "USD Cash", "Total"]
+    assert df.iloc[0]["Balance (PLN)"] == "250.00"
+    assert df.iloc[1]["Balance (PLN)"] == "400.00"
+    assert df.iloc[2]["Balance (PLN)"] == "650.00"
+    assert df.iloc[0]["Delete"] == "🗑️"
+    assert df.iloc[2]["Delete"] == ""
+    assert len(account_ids) == 2
+    print("   ✓ Accounts table stays manual, PLN-first, and totals correctly.")
+
+
 def test_transaction_crud_and_oversell_protection():
-    print("2. Testing transaction CRUD, oversell validation, and timestamp ordering...")
+    print("3. Testing transaction CRUD, oversell validation, and timestamp ordering...")
     conn = fresh_db("test_mvp_transactions.duckdb")
 
     conn.execute("""
@@ -143,7 +171,7 @@ def test_transaction_crud_and_oversell_protection():
 
 
 def test_bonds_simple_ledger():
-    print("3. Testing bonds simple ledger...")
+    print("4. Testing bonds simple ledger...")
     conn = fresh_db("test_mvp_bonds.duckdb")
 
     # parse_series_code still works
@@ -225,7 +253,7 @@ def test_bonds_simple_ledger():
 
 
 def test_bond_rate_schedule_valuation():
-    print("4. Testing bond yearly-rate valuation logic...")
+    print("5. Testing bond yearly-rate valuation logic...")
     assert bond_service._round_to_half_zloty(Decimal("123.24")) == Decimal("123.0")
     assert bond_service._round_to_half_zloty(Decimal("123.25")) == Decimal("123.5")
     assert bond_service._round_to_half_zloty(Decimal("123.74")) == Decimal("123.5")
@@ -316,7 +344,7 @@ def test_bond_rate_schedule_valuation():
 
 
 def test_stock_search_adapter_and_ui_resolution():
-    print("5. Testing Yahoo stock search normalization and UI field population...")
+    print("6. Testing Yahoo stock search normalization and UI field population...")
 
     original_search = stocks_yfinance.yf.Search
     original_get_info = stocks_yfinance.get_info
@@ -367,7 +395,7 @@ def test_stock_search_adapter_and_ui_resolution():
 
 
 def test_crypto_search_and_ledger_rows():
-    print("6. Testing CoinGecko crypto search normalization, persistence, and ledger math...")
+    print("7. Testing CoinGecko crypto search normalization, persistence, and ledger math...")
     conn = fresh_db("test_mvp_crypto_ledger.duckdb")
 
     original_search = crypto_coingecko.search_coin
@@ -470,7 +498,7 @@ def test_crypto_search_and_ledger_rows():
 
 
 def test_minor_unit_price_normalization():
-    print("7. Testing minor-unit Yahoo price normalization...")
+    print("8. Testing minor-unit Yahoo price normalization...")
     original_ticker = stocks_yfinance.yf.Ticker
 
     class FakeTicker:
@@ -508,7 +536,7 @@ def test_minor_unit_price_normalization():
 
 
 def test_stock_ledger_rows_and_fifo_fee_conversion():
-    print("8. Testing stock ledger rows, FIFO fee conversion, and current valuation...")
+    print("9. Testing stock ledger rows, FIFO fee conversion, and current valuation...")
     conn = fresh_db("test_mvp_stock_ledger.duckdb")
 
     resolved_result = {
@@ -622,7 +650,7 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
 
 
 def test_stock_ledger_fetches_and_caches_historical_fx_once():
-    print("9. Testing stock ledger historical FX fetch/caching and missing-price behavior...")
+    print("10. Testing stock ledger historical FX fetch/caching and missing-price behavior...")
     conn = fresh_db("test_mvp_stock_fx_cache.duckdb")
     conn.execute("""
         INSERT INTO holdings (asset_type, symbol, name, currency, exchange_label)
@@ -685,7 +713,7 @@ def test_stock_ledger_fetches_and_caches_historical_fx_once():
 
 
 def test_stock_save_helper_refreshes_dashboard_on_success():
-    print("10. Testing stock save helper refresh behavior...")
+    print("11. Testing stock save helper refresh behavior...")
     original_save = stock_ledger_service.save_stock_order
     original_refs = app_ui._reference_updates
     original_refresh = app_ui._refresh_dashboard
@@ -719,7 +747,7 @@ def test_stock_save_helper_refreshes_dashboard_on_success():
 
 
 def test_crypto_save_helper_refreshes_dashboard_on_success():
-    print("11. Testing crypto save helper refresh behavior...")
+    print("12. Testing crypto save helper refresh behavior...")
     original_save = crypto_ledger_service.save_crypto_order
     original_refs = app_ui._reference_updates
     original_refresh = app_ui._refresh_dashboard
@@ -753,7 +781,7 @@ def test_crypto_save_helper_refreshes_dashboard_on_success():
 
 
 def test_fx_refresh_only_persists_used_currencies():
-    print("12. Testing FX refresh only persists used currencies and supports CoinGecko ids...")
+    print("13. Testing FX refresh only persists used currencies and supports CoinGecko ids...")
     conn = fresh_db("test_mvp_fx_refresh_filter.duckdb")
     conn.execute("""
         INSERT INTO holdings (asset_type, symbol, name, currency, coingecko_id)
@@ -825,7 +853,7 @@ def test_fx_refresh_only_persists_used_currencies():
 
 
 def test_schema_migration_adds_stock_ledger_columns():
-    print("13. Testing schema migration for ledger columns...")
+    print("14. Testing schema migration for ledger columns...")
     db_path = Path("data") / "test_mvp_schema_migration.duckdb"
     if db_path.exists():
         db_path.unlink()
@@ -871,19 +899,20 @@ def test_schema_migration_adds_stock_ledger_columns():
 
 
 def test_dashboard_payload_smoke():
-    print("14. Testing dashboard payload smoke...")
+    print("15. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
     payload = dashboard_service.get_dashboard_payload(25)
-    assert len(payload) == 11
+    assert len(payload) == 12
     assert isinstance(payload[0], str)
     assert payload[4] == []
+    assert payload[10] == []
     print("   ✓ Dashboard payload stays stable for the UI.")
 
 
 def test_overview_summary_markdown_is_readable():
-    print("15. Testing overview summary markdown formatting and cache timestamps...")
+    print("16. Testing overview summary markdown formatting and cache timestamps...")
     conn = fresh_db("test_mvp_overview_markdown.duckdb")
     conn.execute("""
         INSERT INTO holdings (asset_type, symbol, name, currency)
@@ -919,7 +948,7 @@ def test_overview_summary_markdown_is_readable():
 
 
 def test_overview_positions_table_is_pln_only():
-    print("16. Testing overview positions table formatting...")
+    print("17. Testing overview positions table formatting...")
     conn = fresh_db("test_mvp_overview_positions.duckdb")
     conn.execute("""
         INSERT INTO holdings (asset_type, symbol, name, currency)
@@ -994,6 +1023,7 @@ def main():
     print("Testing MVP regressions\n")
     print("=" * 50)
     test_price_currency_and_cash_summary()
+    test_accounts_table_is_pln_first_and_totaled()
     test_transaction_crud_and_oversell_protection()
     test_bonds_simple_ledger()
     test_bond_rate_schedule_valuation()

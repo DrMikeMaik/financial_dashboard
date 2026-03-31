@@ -36,7 +36,7 @@ def _reference_updates() -> tuple:
 
 
 def _clear_account_form() -> tuple:
-    return None, "", None, "PLN", 0.0, True, ""
+    return None, "", None, "PLN", 0.0, ""
 
 
 def _clear_stock_form() -> tuple:
@@ -432,7 +432,13 @@ def create_ui():
                 bond_output = gr.Textbox(label="Result", interactive=False)
 
             with gr.Tab("Accounts"):
-                accounts_df = gr.DataFrame(label="Accounts")
+                account_ids_state = gr.State([])
+                accounts_df = gr.DataFrame(
+                    label="Accounts",
+                    wrap=True,
+                    line_breaks=True,
+                    datatype=["str", "str", "str", "str", "str"],
+                )
 
                 gr.Markdown("### Account Editor")
                 account_select = gr.Dropdown(
@@ -445,11 +451,9 @@ def create_ui():
                     acc_type = gr.Dropdown(label="Type", choices=ACCOUNT_TYPE_CHOICES, allow_custom_value=True, value=None, scale=1)
                     acc_currency = gr.Textbox(label="Currency", value="PLN", scale=1)
                     acc_balance = gr.Number(label="Balance", value=0.0, scale=1)
-                acc_active = gr.Checkbox(label="Active", value=True)
 
                 with gr.Row():
                     acc_save_btn = gr.Button("Save Account", variant="primary")
-                    acc_delete_btn = gr.Button("Delete Account", variant="stop")
                     acc_clear_btn = gr.Button("Clear")
 
                 acc_output = gr.Textbox(label="Account Result", interactive=False)
@@ -469,6 +473,7 @@ def create_ui():
             bonds_df,
             bond_ids_state,
             accounts_df,
+            account_ids_state,
             settings_md,
         ]
 
@@ -726,12 +731,12 @@ def create_ui():
         account_select.change(
             fn=account_service.load_account,
             inputs=account_select,
-            outputs=[acc_name, acc_type, acc_currency, acc_balance, acc_active, acc_output],
+            outputs=[acc_name, acc_type, acc_currency, acc_balance, acc_output],
         )
 
         acc_save_btn.click(
             fn=account_service.save_account,
-            inputs=[account_select, acc_name, acc_type, acc_currency, acc_balance, acc_active],
+            inputs=[account_select, acc_name, acc_type, acc_currency, acc_balance],
             outputs=acc_output,
         ).then(
             fn=_reference_updates,
@@ -741,9 +746,17 @@ def create_ui():
             outputs=dashboard_outputs,
         )
 
-        acc_delete_btn.click(
-            fn=account_service.delete_account,
-            inputs=account_select,
+        def _handle_account_table_click(evt: gr.SelectData, account_ids):
+            if evt.value != "🗑️":
+                return gr.skip()
+            row = evt.index[0]
+            if row >= len(account_ids):
+                return gr.skip()
+            return account_service.delete_account_by_id(account_ids[row])
+
+        accounts_df.select(
+            fn=_handle_account_table_click,
+            inputs=account_ids_state,
             outputs=acc_output,
         ).then(
             fn=_reference_updates,
@@ -755,7 +768,7 @@ def create_ui():
 
         acc_clear_btn.click(
             fn=_clear_account_form,
-            outputs=[account_select, acc_name, acc_type, acc_currency, acc_balance, acc_active, acc_output],
+            outputs=[account_select, acc_name, acc_type, acc_currency, acc_balance, acc_output],
         )
 
     return demo

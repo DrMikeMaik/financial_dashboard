@@ -4,6 +4,7 @@ from decimal import Decimal
 import pandas as pd
 
 from app.core.db import get_connection
+from app.core.portfolio import get_fx_rate_info
 
 
 def _parse_account_choice(account_choice: str | None) -> int | None:
@@ -13,38 +14,59 @@ def _parse_account_choice(account_choice: str | None) -> int | None:
 
 
 def get_accounts_df() -> pd.DataFrame:
-    """Get all accounts."""
+    """Get all accounts as a PLN-first snapshot table."""
     conn = get_connection()
     try:
         rows = conn.execute("""
             SELECT id, name, type, currency, balance, active
             FROM accounts
-            ORDER BY name
+            ORDER BY CASE WHEN currency = 'PLN' THEN 0 ELSE 1 END, name
         """).fetchall()
 
         if not rows:
-            return pd.DataFrame(columns=["ID", "Name", "Type", "Currency", "Balance", "Active"])
+            return pd.DataFrame(columns=["Account", "CCY", "Balance", "Balance (PLN)", "Delete"]), []
 
-        return pd.DataFrame([
-            {
-                "ID": row[0],
-                "Name": row[1],
-                "Type": row[2],
-                "Currency": row[3],
-                "Balance": f"{Decimal(str(row[4])):,.2f}",
-                "Active": "✓" if row[5] else "✗",
-            }
-            for row in rows
-        ])
+        data = []
+        account_ids = []
+        total_pln = Decimal("0")
+        for account_id, name, _, currency, balance, active in rows:
+            if not active:
+                continue
+            balance_dec = Decimal(str(balance or 0))
+            fx_rate, found, _, _ = get_fx_rate_info(conn, currency, "PLN")
+            balance_pln = balance_dec * fx_rate if found or currency == "PLN" else None
+            if balance_pln is not None:
+                total_pln += balance_pln
+
+            data.append({
+                "Account": name,
+                "CCY": currency,
+                "Balance": f"{balance_dec:,.2f}",
+                "Balance (PLN)": f"{balance_pln:,.2f}" if balance_pln is not None else "",
+                "Delete": "🗑️",
+            })
+            account_ids.append(account_id)
+
+        if not data:
+            return pd.DataFrame(columns=["Account", "CCY", "Balance", "Balance (PLN)", "Delete"]), []
+
+        data.append({
+            "Account": "Total",
+            "CCY": "",
+            "Balance": "",
+            "Balance (PLN)": f"{total_pln:,.2f}",
+            "Delete": "",
+        })
+        return pd.DataFrame(data), account_ids
     finally:
         conn.close()
 
 
-def load_account(account_choice: str | None) -> tuple[str, str | None, str, float, bool, str]:
+def load_account(account_choice: str | None) -> tuple[str, str | None, str, float, str]:
     """Load an account into the edit form."""
     account_id = _parse_account_choice(account_choice)
     if account_id is None:
-        return "", None, "PLN", 0.0, True, ""
+        return "", None, "PLN", 0.0, ""
 
     conn = get_connection()
     try:
@@ -55,9 +77,9 @@ def load_account(account_choice: str | None) -> tuple[str, str | None, str, floa
         """, [account_id]).fetchone()
 
         if not row:
-            return "", None, "PLN", 0.0, True, "✗ Account not found."
+            return "", None, "PLN", 0.0, "✗ Account not found."
 
-        return row[0], row[1], row[2], float(row[3]), bool(row[4]), f"Loaded account #{account_id}."
+        return row[0], row[1], row[2], float(row[3]), f"Loaded account #{account_id}."
     finally:
         conn.close()
 
@@ -68,7 +90,6 @@ def save_account(
     acc_type: str,
     currency: str,
     balance: float | int | None = 0,
-    active: bool = True,
 ) -> str:
     """Create or update an account."""
     if not name or not name.strip():
@@ -87,15 +108,15 @@ def save_account(
             conn.execute("""
                 INSERT INTO accounts (id, name, type, currency, balance, active)
                 VALUES (nextval('seq_accounts_id'), ?, ?, ?, ?, ?)
-            """, [name.strip(), acc_type, currency.strip().upper(), balance_dec, active])
+            """, [name.strip(), acc_type, currency.strip().upper(), balance_dec, True])
             conn.commit()
             return f"✓ Added account: {name.strip()}"
 
         conn.execute("""
             UPDATE accounts
-            SET name = ?, type = ?, currency = ?, balance = ?, active = ?
+            SET name = ?, type = ?, currency = ?, balance = ?, active = TRUE
             WHERE id = ?
-        """, [name.strip(), acc_type, currency.strip().upper(), balance_dec, active, account_id])
+        """, [name.strip(), acc_type, currency.strip().upper(), balance_dec, account_id])
         conn.commit()
         return f"✓ Updated account: {name.strip()}"
     except Exception as exc:
@@ -128,3 +149,8 @@ def delete_account(account_choice: str | None) -> str:
         return f"✗ Error: {exc}"
     finally:
         conn.close()
+
+
+def delete_account_by_id(account_id: int) -> str:
+    """Delete an account by numeric id."""
+    return delete_account(str(account_id))

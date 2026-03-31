@@ -274,6 +274,7 @@ def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "")
     crypto_orders_df, crypto_order_ids = get_crypto_orders_df()
     stock_orders_df, stock_order_ids = get_stock_orders_df()
     bonds_dataframe, bonds_ids = get_bonds_df()
+    accounts_dataframe, account_ids = get_accounts_df()
     return (
         refresh_status,
         overview_md,
@@ -284,7 +285,8 @@ def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "")
         stock_order_ids,
         bonds_dataframe,
         bonds_ids,
-        get_accounts_df(),
+        accounts_dataframe,
+        account_ids,
         get_settings_markdown(),
     )
 
