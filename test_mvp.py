@@ -966,7 +966,7 @@ def test_overview_positions_table_is_pln_only():
         "UPL",
         "Price Source",
     ]
-    assert list(df["Symbol"]) == ["BTC", "COI0528", "BMW", "Total"]
+    assert list(df["Symbol"]) == ["BTC", "COI", "BMW", "Total"]
     assert "Name" not in df.columns
     assert df.iloc[0]["Quantity"] == "0.1235"
     assert df.iloc[0]["Avg Cost (PLN)"] == "200,000.00"
