@@ -40,6 +40,7 @@ class Holding:
     symbol: str
     name: str | None
     currency: str
+    coingecko_id: str | None = None
     exchange_label: str | None = None
     created_at: datetime | None = None
 

@@ -6,8 +6,8 @@ import gradio as gr
 from app.services import (
     account_service,
     bond_service,
+    crypto_ledger_service,
     dashboard_service,
-    holding_service,
     reference_service,
     stock_ledger_service,
     transaction_service,
@@ -35,6 +35,7 @@ def _reference_updates() -> tuple:
         gr.update(choices=reference_service.list_account_names(), value=None),
         gr.update(choices=reference_service.list_account_choices(), value=None),
         gr.update(choices=reference_service.list_bond_choices(), value=None),
+        gr.update(choices=crypto_ledger_service.list_crypto_order_choices(), value=None),
         gr.update(choices=stock_ledger_service.list_stock_order_choices(), value=None),
     )
 
@@ -76,6 +77,118 @@ def _clear_stock_form() -> tuple:
         "",
         "",
     )
+
+
+def _clear_crypto_form() -> tuple:
+    return (
+        gr.update(value=None),
+        "",
+        [],
+        gr.update(choices=[], value=None),
+        "",
+        "PLN",
+        "",
+        "",
+        datetime.now().replace(hour=0, minute=0, second=0, microsecond=0),
+        "buy",
+        None,
+        None,
+        0.0,
+        "",
+        "",
+    )
+
+
+def _search_crypto_candidates(query: str | None) -> tuple:
+    results, message = crypto_ledger_service.search_crypto_candidates(query or "")
+    choices = [result["label"] for result in results]
+
+    if not results:
+        return (
+            gr.update(value=None),
+            [],
+            gr.update(choices=[], value=None),
+            "",
+            "PLN",
+            "",
+            "",
+            message,
+        )
+
+    selected_choice = choices[0] if len(choices) == 1 else None
+    selected = crypto_ledger_service.resolve_search_choice(selected_choice, results)
+    return (
+        gr.update(value=None),
+        results,
+        gr.update(choices=choices, value=selected_choice),
+        selected["symbol"] if selected else "",
+        "PLN",
+        selected["name"] if selected else "",
+        selected["id"] if selected else "",
+        message,
+    )
+
+
+def _apply_crypto_search_choice(selected_choice: str | None, results_state) -> tuple:
+    selected = crypto_ledger_service.resolve_search_choice(selected_choice, results_state)
+    if selected is None:
+        return "", "PLN", "", "", ""
+    return (
+        selected["symbol"],
+        "PLN",
+        selected["name"] or "",
+        selected["id"] or "",
+        f"Selected {selected['symbol']}.",
+    )
+
+
+def _load_crypto_order_form(order_choice: str | None) -> tuple:
+    payload = crypto_ledger_service.load_crypto_order(order_choice)
+    choices = [result["label"] for result in payload["results_state"]]
+    return (
+        payload["search_query"],
+        payload["results_state"],
+        gr.update(choices=choices, value=payload["selected_choice"]),
+        payload["resolved_symbol"],
+        payload["trade_currency"],
+        payload["asset_name"],
+        payload["coingecko_id"],
+        payload["timestamp_text"],
+        payload["action"],
+        payload["quantity"],
+        payload["price"],
+        payload["fee"],
+        payload["note"],
+        payload["message"],
+    )
+
+
+def _save_crypto_order_and_refresh(
+    limit,
+    order_choice: str | None,
+    selected_search_choice: str | None,
+    results_state,
+    timestamp_text,
+    action,
+    quantity,
+    price,
+    fee_pln,
+    note: str,
+) -> tuple:
+    result = crypto_ledger_service.save_crypto_order(
+        order_choice,
+        selected_search_choice,
+        results_state,
+        timestamp_text,
+        action,
+        quantity,
+        price,
+        fee_pln,
+        note,
+    )
+    reference_updates = _reference_updates()
+    dashboard_payload = _refresh_dashboard(limit) if result.startswith("✓") else _dashboard_payload(limit)
+    return (result, *reference_updates, *dashboard_payload)
 
 
 def _search_stock_candidates(query: str | None) -> tuple:
@@ -200,15 +313,59 @@ def create_ui():
                 positions_df = gr.DataFrame(label="All Positions")
 
             with gr.Tab("Crypto"):
-                crypto_df = gr.DataFrame(label="Crypto Holdings")
+                crypto_order_ids_state = gr.State([])
+                crypto_search_results_state = gr.State([])
+                crypto_df = gr.DataFrame(
+                    label="Crypto Orders",
+                    wrap=True,
+                    line_breaks=True,
+                    datatype=["str", "markdown", "str", "str", "str", "str", "str", "str", "str", "str", "str", "str"],
+                )
 
-                gr.Markdown("### Add Crypto Holding")
+                gr.Markdown("### Crypto Order Editor")
+                crypto_order_select = gr.Dropdown(
+                    label="Existing Crypto Order",
+                    choices=crypto_ledger_service.list_crypto_order_choices(),
+                    allow_custom_value=False,
+                    value=None,
+                )
+
                 with gr.Row():
-                    crypto_symbol = gr.Textbox(label="Symbol", scale=1)
-                    crypto_name = gr.Textbox(label="Name", scale=2)
-                    crypto_currency = gr.Textbox(label="Currency", value="USD", scale=1)
+                    crypto_search_query = gr.Textbox(label="Search CoinGecko", placeholder="e.g. BTC or bitcoin", scale=3)
+                    crypto_search_btn = gr.Button("Search", scale=1)
 
-                crypto_save_btn = gr.Button("Save Crypto Holding")
+                crypto_result_select = gr.Dropdown(
+                    label="Search Results",
+                    choices=[],
+                    allow_custom_value=False,
+                    value=None,
+                )
+
+                with gr.Row():
+                    crypto_resolved_symbol = gr.Textbox(label="Resolved Symbol", interactive=False, scale=1)
+                    crypto_trade_currency = gr.Textbox(label="Trade Currency", value="PLN", interactive=False, scale=1)
+                    crypto_asset_name = gr.Textbox(label="Asset Name", interactive=False, scale=2)
+                    crypto_coingecko_id = gr.Textbox(label="CoinGecko ID", interactive=False, scale=2)
+
+                with gr.Row():
+                    crypto_ts = gr.DateTime(
+                        label="Date",
+                        value=datetime.now().replace(hour=0, minute=0, second=0, microsecond=0),
+                        include_time=False,
+                        type="datetime",
+                        scale=2,
+                    )
+                    crypto_action = gr.Dropdown(label="Action", choices=["buy", "sell"], value="buy", scale=1)
+
+                with gr.Row():
+                    crypto_qty = gr.Number(label="Qty", scale=1)
+                    crypto_price = gr.Number(label="Spot Price (PLN)", scale=1)
+                    crypto_fee = gr.Number(label="Fee / Spread (PLN)", value=0.0, scale=1)
+
+                crypto_note = gr.Textbox(label="Note")
+                with gr.Row():
+                    crypto_save_btn = gr.Button("Save Crypto Order", variant="primary")
+                    crypto_clear_btn = gr.Button("Clear")
                 crypto_output = gr.Textbox(label="Crypto Result", interactive=False)
 
             with gr.Tab("Stocks & ETFs"):
@@ -376,6 +533,7 @@ def create_ui():
             summary_md,
             positions_df,
             crypto_df,
+            crypto_order_ids_state,
             stocks_df,
             stock_order_ids_state,
             bonds_df,
@@ -391,6 +549,7 @@ def create_ui():
             txn_account,
             account_select,
             bond_select,
+            crypto_order_select,
             stock_order_select,
         ]
 
@@ -412,9 +571,71 @@ def create_ui():
             outputs=dashboard_outputs,
         )
 
+        crypto_order_select.change(
+            fn=_load_crypto_order_form,
+            inputs=crypto_order_select,
+            outputs=[
+                crypto_search_query,
+                crypto_search_results_state,
+                crypto_result_select,
+                crypto_resolved_symbol,
+                crypto_trade_currency,
+                crypto_asset_name,
+                crypto_coingecko_id,
+                crypto_ts,
+                crypto_action,
+                crypto_qty,
+                crypto_price,
+                crypto_fee,
+                crypto_note,
+                crypto_output,
+            ],
+        )
+
+        crypto_search_btn.click(
+            fn=_search_crypto_candidates,
+            inputs=crypto_search_query,
+            outputs=[
+                crypto_order_select,
+                crypto_search_results_state,
+                crypto_result_select,
+                crypto_resolved_symbol,
+                crypto_trade_currency,
+                crypto_asset_name,
+                crypto_coingecko_id,
+                crypto_output,
+            ],
+        )
+
+        crypto_result_select.change(
+            fn=_apply_crypto_search_choice,
+            inputs=[crypto_result_select, crypto_search_results_state],
+            outputs=[
+                crypto_resolved_symbol,
+                crypto_trade_currency,
+                crypto_asset_name,
+                crypto_coingecko_id,
+                crypto_output,
+            ],
+        )
+
         crypto_save_btn.click(
-            fn=holding_service.add_crypto_holding,
-            inputs=[crypto_symbol, crypto_name, crypto_currency],
+            fn=_save_crypto_order_and_refresh,
+            inputs=[txn_limit, crypto_order_select, crypto_result_select, crypto_search_results_state, crypto_ts, crypto_action, crypto_qty, crypto_price, crypto_fee, crypto_note],
+            outputs=[crypto_output, *refresh_reference_outputs, *dashboard_outputs],
+        )
+
+        def _handle_crypto_table_click(evt: gr.SelectData, crypto_order_ids):
+            if evt.value != "🗑️":
+                return gr.skip()
+            row = evt.index[0]
+            if row >= len(crypto_order_ids):
+                return gr.skip()
+            return crypto_ledger_service.delete_crypto_order_by_id(crypto_order_ids[row])
+
+        crypto_df.select(
+            fn=_handle_crypto_table_click,
+            inputs=crypto_order_ids_state,
             outputs=crypto_output,
         ).then(
             fn=_reference_updates,
@@ -423,6 +644,27 @@ def create_ui():
             fn=_dashboard_payload,
             inputs=txn_limit,
             outputs=dashboard_outputs,
+        )
+
+        crypto_clear_btn.click(
+            fn=_clear_crypto_form,
+            outputs=[
+                crypto_order_select,
+                crypto_search_query,
+                crypto_search_results_state,
+                crypto_result_select,
+                crypto_resolved_symbol,
+                crypto_trade_currency,
+                crypto_asset_name,
+                crypto_coingecko_id,
+                crypto_ts,
+                crypto_action,
+                crypto_qty,
+                crypto_price,
+                crypto_fee,
+                crypto_note,
+                crypto_output,
+            ],
         )
 
         stock_order_select.change(

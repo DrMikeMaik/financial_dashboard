@@ -79,6 +79,7 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
             symbol VARCHAR NOT NULL,
             name VARCHAR,
             currency VARCHAR NOT NULL,
+            coingecko_id VARCHAR,
             exchange_label VARCHAR,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(asset_type, symbol)
@@ -107,7 +108,7 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
         )
     """)
 
-    for col in ("exchange_label VARCHAR",):
+    for col in ("coingecko_id VARCHAR", "exchange_label VARCHAR"):
         try:
             conn.execute(f"ALTER TABLE holdings ADD COLUMN {col}")
         except duckdb.CatalogException:

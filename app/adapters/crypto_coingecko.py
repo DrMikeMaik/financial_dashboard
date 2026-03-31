@@ -9,6 +9,41 @@ from typing import Dict, List, Optional
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 
 
+def _fetch_simple_prices(ids: List[str], vs_currency: str) -> Dict[str, Decimal]:
+    """Fetch current prices keyed by CoinGecko id."""
+    if not ids:
+        return {}
+
+    unique_ids = list(dict.fromkeys(ids))
+    ids_str = ",".join(unique_ids)
+
+    try:
+        url = f"{COINGECKO_BASE_URL}/simple/price"
+        params = {
+            "ids": ids_str,
+            "vs_currencies": vs_currency.lower(),
+        }
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        prices = {}
+        for coin_id, price_data in data.items():
+            if vs_currency.lower() in price_data:
+                prices[coin_id] = Decimal(str(price_data[vs_currency.lower()]))
+
+        return prices
+
+    except Exception as e:
+        print(f"Error fetching CoinGecko prices: {e}")
+        return {}
+
+
+def get_current_prices_by_ids(ids: List[str], vs_currency: str = "usd") -> Dict[str, Decimal]:
+    """Fetch current prices keyed by CoinGecko ids."""
+    return _fetch_simple_prices(ids, vs_currency)
+
+
 def get_current_prices(symbols: List[str], vs_currency: str = "usd") -> Dict[str, Decimal]:
     """
     Fetch current prices for multiple cryptocurrencies.
@@ -51,29 +86,13 @@ def get_current_prices(symbols: List[str], vs_currency: str = "usd") -> Dict[str
         ids.append(coin_id)
         symbol_map[coin_id] = symbol_upper
 
-    ids_str = ",".join(ids)
+    prices_by_id = _fetch_simple_prices(ids, vs_currency)
+    prices = {}
+    for coin_id, price in prices_by_id.items():
+        symbol = symbol_map.get(coin_id, coin_id.upper())
+        prices[symbol] = price
 
-    try:
-        url = f"{COINGECKO_BASE_URL}/simple/price"
-        params = {
-            "ids": ids_str,
-            "vs_currencies": vs_currency.lower(),
-        }
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-
-        prices = {}
-        for coin_id, price_data in data.items():
-            if vs_currency.lower() in price_data:
-                symbol = symbol_map.get(coin_id, coin_id.upper())
-                prices[symbol] = Decimal(str(price_data[vs_currency.lower()]))
-
-        return prices
-
-    except Exception as e:
-        print(f"Error fetching CoinGecko prices: {e}")
-        return {}
+    return prices
 
 
 def get_price(symbol: str, vs_currency: str = "usd") -> Optional[Decimal]:
