@@ -472,15 +472,15 @@ def test_stock_ledger_rows_and_fifo_fee_conversion():
     assert df.iloc[1]["Date"] == "2025-01-03"
     assert "EUNM.DE" in df.iloc[1]["Symbol"]
     assert "XETRA EUR" in df.iloc[1]["Symbol"]
-    assert df.iloc[1]["Price"] == "100.0000"
+    assert df.iloc[1]["Price"] == "100.00"
     assert df.iloc[1]["CCY"] == "EUR"
-    assert df.iloc[1]["FX to PLN"] == "4.0000"
+    assert df.iloc[1]["FX PLN"] == "4.0000"
     assert df.iloc[1]["Trade Value"] == "4,000.00 PLN"
     assert df.iloc[1]["Current Value"] == "3,276.00 PLN"
     assert df.iloc[1]["Change %"] == "35.82%"
     assert df.iloc[1]["Delete"] == "🗑️"
     assert df.iloc[2]["Date"] == "Total"
-    assert df.iloc[2]["Commission"] == "28.00 PLN"
+    assert df.iloc[2]["Comm."] == "28.00 PLN"
     assert df.iloc[2]["Trade Value"] == "5,968.00 PLN"
     assert df.iloc[2]["Current Value"] == "3,276.00 PLN"
     assert df.iloc[2]["Change %"] == "35.82%"
@@ -545,10 +545,10 @@ def test_stock_ledger_fetches_and_caches_historical_fx_once():
     portfolio_core.fx_nbp.get_rate_on_date = fake_get_rate_on_date
     try:
         df, _ = stock_ledger_service.get_stock_orders_df()
-        assert df.iloc[0]["FX to PLN"] == "4.2500"
+        assert df.iloc[0]["FX PLN"] == "4.2500"
         assert df.iloc[0]["Current Value"] == ""
         df, _ = stock_ledger_service.get_stock_orders_df()
-        assert df.iloc[0]["FX to PLN"] == "4.2500"
+        assert df.iloc[0]["FX PLN"] == "4.2500"
         ui_selection = app_ui._apply_stock_search_choice(
             "BMW | BMW AG | XETRA | EUR",
             [{

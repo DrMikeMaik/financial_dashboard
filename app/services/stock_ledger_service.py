@@ -18,9 +18,9 @@ ORDER_COLUMNS = [
     "Qty",
     "Price",
     "CCY",
-    "Commission",
+    "Comm.",
     "Trade Value",
-    "FX to PLN",
+    "FX PLN",
     "Current Value",
     "Change %",
     "Delete",
@@ -54,7 +54,7 @@ def _format_percent(value: Decimal | None) -> str:
 def _format_price(value: Decimal | None) -> str:
     if value is None:
         return ""
-    return _format_decimal(value, 4)
+    return _format_decimal(value, 2)
 
 
 def _format_date(ts: datetime) -> str:
@@ -488,9 +488,9 @@ def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
                 "Qty": _format_quantity(qty_dec),
                 "Price": _format_price(price_dec),
                 "CCY": currency,
-                "Commission": _format_money(fee_dec, (fee_currency or "PLN").upper()),
+                "Comm.": _format_money(fee_dec, (fee_currency or "PLN").upper()),
                 "Trade Value": _format_money(trade_value_pln, "PLN"),
-                "FX to PLN": _format_decimal(historical_fx, 4) if fx_found else "",
+                "FX PLN": _format_decimal(historical_fx, 4) if fx_found else "",
                 "Current Value": "",
                 "Change %": "",
                 "Delete": "🗑️",
@@ -564,9 +564,9 @@ def get_stock_orders_df() -> tuple[pd.DataFrame, list[int]]:
             "Qty": "",
             "Price": "",
             "CCY": "",
-            "Commission": _format_money(total_commission_pln, "PLN"),
+            "Comm.": _format_money(total_commission_pln, "PLN"),
             "Trade Value": _format_money(total_trade_value_pln, "PLN"),
-            "FX to PLN": "",
+            "FX PLN": "",
             "Current Value": _format_money(total_current_value_pln, "PLN"),
             "Change %": _format_percent(total_pct_change),
             "Delete": "",
