@@ -948,6 +948,10 @@ def test_overview_positions_table_is_pln_only():
             ('2026-03-31 10:00:00', 'USD', 'PLN', 4.0, 'test'),
             ('2026-03-31 10:00:00', 'EUR', 'PLN', 4.5, 'test')
     """)
+    bond_result = bond_service.add_bond("COI0528", 50, datetime(2024, 1, 15), 5.75)
+    assert bond_result.startswith("✓")
+    bond_id = conn.execute("SELECT id FROM bonds WHERE series = 'COI0528'").fetchone()[0]
+    bond_service.append_bond_rate(bond_id, 7.15)
     conn.commit()
     conn.close()
 
@@ -962,20 +966,27 @@ def test_overview_positions_table_is_pln_only():
         "UPL",
         "Price Source",
     ]
-    assert list(df["Symbol"]) == ["BTC", "BMW", "Total"]
+    assert list(df["Symbol"]) == ["BTC", "COI0528", "BMW", "Total"]
     assert "Name" not in df.columns
     assert df.iloc[0]["Quantity"] == "0.1235"
     assert df.iloc[0]["Avg Cost (PLN)"] == "200,000.00"
     assert df.iloc[0]["Current Price (PLN)"] == "210,000.00"
     assert df.iloc[0]["UPL"] == "1,234.57"
-    assert df.iloc[1]["Quantity"] == "10.0000"
-    assert df.iloc[1]["Avg Cost (PLN)"] == "450.00"
-    assert df.iloc[1]["Current Price (PLN)"] == "480.00"
-    assert df.iloc[1]["Value (PLN)"] == "4,800.00"
-    assert df.iloc[1]["UPL"] == "300.00"
-    assert df.iloc[2]["Symbol"] == "Total"
-    assert df.iloc[2]["Value (PLN)"] == "30,725.92"
-    assert df.iloc[2]["UPL"] == "1,534.57"
+    assert df.iloc[1]["Asset Type"] == "BOND"
+    assert df.iloc[1]["Quantity"] == "50.0000"
+    assert df.iloc[1]["Avg Cost (PLN)"] == "100.00"
+    assert df.iloc[1]["Current Price (PLN)"] == "100.00"
+    assert df.iloc[1]["Value (PLN)"] == "5,000.00"
+    assert df.iloc[1]["UPL"] == "0.00"
+    assert df.iloc[1]["Price Source"] == "bond_model"
+    assert df.iloc[2]["Quantity"] == "10.0000"
+    assert df.iloc[2]["Avg Cost (PLN)"] == "450.00"
+    assert df.iloc[2]["Current Price (PLN)"] == "480.00"
+    assert df.iloc[2]["Value (PLN)"] == "4,800.00"
+    assert df.iloc[2]["UPL"] == "300.00"
+    assert df.iloc[3]["Symbol"] == "Total"
+    assert df.iloc[3]["Value (PLN)"] == "35,725.92"
+    assert df.iloc[3]["UPL"] == "1,534.57"
     print("   ✓ Overview positions table is PLN-only and compact.")
 
 

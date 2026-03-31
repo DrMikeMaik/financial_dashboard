@@ -1,5 +1,6 @@
 """Dashboard read models and refresh orchestration."""
 from datetime import datetime
+from decimal import Decimal
 
 import pandas as pd
 
@@ -149,11 +150,14 @@ def _positions_to_dataframe(asset_types: set[str] | None = None) -> pd.DataFrame
     if asset_types is not None:
         positions = [position for position in positions if position.holding.asset_type in asset_types]
 
-    if not positions:
+    include_bonds = asset_types is None or "bond" in asset_types
+    bond_rows = bond_service.get_bond_overview_rows() if include_bonds else []
+
+    if not positions and not bond_rows:
         return pd.DataFrame(columns=["Asset Type", "Symbol", "Quantity", "Avg Cost (PLN)", "Current Price (PLN)", "Value (PLN)", "UPL", "Price Source"])
 
     positions.sort(key=lambda position: position.value_pln, reverse=True)
-    rows = [
+    position_rows = [
         {
             "Asset Type": position.holding.asset_type.upper(),
             "Symbol": position.holding.symbol,
@@ -167,8 +171,14 @@ def _positions_to_dataframe(asset_types: set[str] | None = None) -> pd.DataFrame
         for position in positions
     ]
 
-    total_value_pln = sum(position.value_pln for position in positions)
-    total_upl = sum(position.unrealized_pl for position in positions)
+    rows = position_rows + bond_rows
+    rows.sort(
+        key=lambda row: Decimal(str(row["Value (PLN)"]).replace(",", "")),
+        reverse=True,
+    )
+
+    total_value_pln = sum(Decimal(str(row["Value (PLN)"]).replace(",", "")) for row in rows)
+    total_upl = sum(Decimal(str(row["UPL"]).replace(",", "")) for row in rows)
     rows.append({
         "Asset Type": "",
         "Symbol": "Total",
