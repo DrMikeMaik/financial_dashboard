@@ -918,6 +918,67 @@ def test_overview_summary_markdown_is_readable():
     print("   ✓ Overview summary is multiline and trims cache timestamps.")
 
 
+def test_overview_positions_table_is_pln_only():
+    print("16. Testing overview positions table formatting...")
+    conn = fresh_db("test_mvp_overview_positions.duckdb")
+    conn.execute("""
+        INSERT INTO holdings (asset_type, symbol, name, currency)
+        VALUES
+            ('stock', 'BMW', 'BMW AG', 'EUR'),
+            ('crypto', 'BTC', 'Bitcoin', 'PLN')
+    """)
+    stock_holding_id = conn.execute("SELECT id FROM holdings WHERE symbol = 'BMW'").fetchone()[0]
+    crypto_holding_id = conn.execute("SELECT id FROM holdings WHERE symbol = 'BTC'").fetchone()[0]
+
+    conn.execute("""
+        INSERT INTO transactions (holding_id, ts, action, qty, price, fee, fee_currency)
+        VALUES
+            (?, '2026-03-01 10:00:00', 'buy', 10, 100, 0, 'EUR'),
+            (?, '2026-03-01 10:00:00', 'buy', 0.12345678, 200000, 0, 'PLN')
+    """, [stock_holding_id, crypto_holding_id])
+    conn.execute("""
+        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
+        VALUES
+            (?, '2026-03-31 10:00:00', 120, 'USD', 'test'),
+            (?, '2026-03-31 10:00:00', 210000, 'PLN', 'test')
+    """, [stock_holding_id, crypto_holding_id])
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES
+            ('2026-03-31 10:00:00', 'USD', 'PLN', 4.0, 'test'),
+            ('2026-03-31 10:00:00', 'EUR', 'PLN', 4.5, 'test')
+    """)
+    conn.commit()
+    conn.close()
+
+    df = dashboard_service.get_all_positions_df()
+    assert list(df.columns) == [
+        "Asset Type",
+        "Symbol",
+        "Quantity",
+        "Avg Cost (PLN)",
+        "Current Price (PLN)",
+        "Value (PLN)",
+        "UPL",
+        "Price Source",
+    ]
+    assert list(df["Symbol"]) == ["BTC", "BMW", "Total"]
+    assert "Name" not in df.columns
+    assert df.iloc[0]["Quantity"] == "0.1235"
+    assert df.iloc[0]["Avg Cost (PLN)"] == "200,000.00"
+    assert df.iloc[0]["Current Price (PLN)"] == "210,000.00"
+    assert df.iloc[0]["UPL"] == "1,234.57"
+    assert df.iloc[1]["Quantity"] == "10.0000"
+    assert df.iloc[1]["Avg Cost (PLN)"] == "450.00"
+    assert df.iloc[1]["Current Price (PLN)"] == "480.00"
+    assert df.iloc[1]["Value (PLN)"] == "4,800.00"
+    assert df.iloc[1]["UPL"] == "300.00"
+    assert df.iloc[2]["Symbol"] == "Total"
+    assert df.iloc[2]["Value (PLN)"] == "30,725.92"
+    assert df.iloc[2]["UPL"] == "1,534.57"
+    print("   ✓ Overview positions table is PLN-only and compact.")
+
+
 def main():
     print("Testing MVP regressions\n")
     print("=" * 50)
@@ -936,6 +997,7 @@ def main():
     test_schema_migration_adds_stock_ledger_columns()
     test_dashboard_payload_smoke()
     test_overview_summary_markdown_is_readable()
+    test_overview_positions_table_is_pln_only()
     print("\n" + "=" * 50)
     print("✓ MVP regression test complete\n")
 

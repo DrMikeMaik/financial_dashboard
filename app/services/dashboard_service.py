@@ -150,22 +150,37 @@ def _positions_to_dataframe(asset_types: set[str] | None = None) -> pd.DataFrame
         positions = [position for position in positions if position.holding.asset_type in asset_types]
 
     if not positions:
-        return pd.DataFrame(columns=["Asset Type", "Symbol", "Name", "Quantity", "Avg Cost", "Current Price", "Value (PLN)", "Unrealized P/L", "Price Source"])
+        return pd.DataFrame(columns=["Asset Type", "Symbol", "Quantity", "Avg Cost (PLN)", "Current Price (PLN)", "Value (PLN)", "UPL", "Price Source"])
 
-    return pd.DataFrame([
+    positions.sort(key=lambda position: position.value_pln, reverse=True)
+    rows = [
         {
             "Asset Type": position.holding.asset_type.upper(),
             "Symbol": position.holding.symbol,
-            "Name": position.holding.name or "",
-            "Quantity": f"{position.qty:.8f}",
-            "Avg Cost": f"{position.avg_cost:.2f} {position.holding.currency}",
-            "Current Price": f"{position.current_price:.2f} {position.current_price_ccy}",
+            "Quantity": f"{position.qty:.4f}",
+            "Avg Cost (PLN)": f"{((position.value_pln - position.unrealized_pl) / position.qty):,.2f}",
+            "Current Price (PLN)": f"{(position.value_pln / position.qty):,.2f}",
             "Value (PLN)": f"{position.value_pln:,.2f}",
-            "Unrealized P/L": f"{position.unrealized_pl:,.2f}",
+            "UPL": f"{position.unrealized_pl:,.2f}",
             "Price Source": position.price_source or "",
         }
         for position in positions
-    ])
+    ]
+
+    total_value_pln = sum(position.value_pln for position in positions)
+    total_upl = sum(position.unrealized_pl for position in positions)
+    rows.append({
+        "Asset Type": "",
+        "Symbol": "Total",
+        "Quantity": "",
+        "Avg Cost (PLN)": "",
+        "Current Price (PLN)": "",
+        "Value (PLN)": f"{total_value_pln:,.2f}",
+        "UPL": f"{total_upl:,.2f}",
+        "Price Source": "",
+    })
+
+    return pd.DataFrame(rows)
 
 
 def get_all_positions_df() -> pd.DataFrame:
