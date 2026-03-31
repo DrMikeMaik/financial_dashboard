@@ -891,9 +891,14 @@ def test_schema_migration_adds_stock_ledger_columns():
     migrated = init_db(str(db_path))
     holding_columns = {row[1] for row in migrated.execute("PRAGMA table_info('holdings')").fetchall()}
     transaction_columns = {row[1] for row in migrated.execute("PRAGMA table_info('transactions')").fetchall()}
+    migrated.execute("""
+        INSERT INTO holdings (asset_type, symbol, name, currency)
+        VALUES ('fund', 'TESTFUND', 'Test Fund', 'PLN')
+    """)
     assert "coingecko_id" in holding_columns
     assert "exchange_label" in holding_columns
     assert "fee_currency" in transaction_columns
+    assert migrated.execute("SELECT COUNT(*) FROM holdings WHERE asset_type = 'fund'").fetchone()[0] == 1
     migrated.close()
     print("   ✓ Existing databases pick up the new stock ledger columns.")
 

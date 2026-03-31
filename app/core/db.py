@@ -75,7 +75,7 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS holdings (
             id INTEGER PRIMARY KEY DEFAULT nextval('seq_holdings_id'),
-            asset_type VARCHAR NOT NULL CHECK (asset_type IN ('crypto', 'stock', 'etf', 'bond', 'cash')),
+            asset_type VARCHAR NOT NULL CHECK (asset_type IN ('crypto', 'stock', 'etf', 'fund', 'bond', 'cash')),
             symbol VARCHAR NOT NULL,
             name VARCHAR,
             currency VARCHAR NOT NULL,

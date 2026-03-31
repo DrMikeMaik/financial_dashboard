@@ -13,7 +13,7 @@ from app.services import (
 )
 
 
-ACCOUNT_TYPE_CHOICES = ["checking", "savings", "investment", "credit", "other"]
+ACCOUNT_TYPE_CHOICES = ["checking", "savings", "investment", "term_deposit", "credit", "other"]
 CURRENCY_CHOICES = ["PLN", "USD", "EUR", "GBP"]
 
 
@@ -402,6 +402,10 @@ def create_ui():
                     stock_save_btn = gr.Button("Save Stock / ETF Order", variant="primary")
                     stock_clear_btn = gr.Button("Clear")
                 stock_output = gr.Textbox(label="Stock Result", interactive=False)
+
+            with gr.Tab("Fund"):
+                gr.Markdown("### Fund")
+                gr.Markdown("Fund support is planned next. This tab is a placeholder so the pipeline is visible in the UI.")
 
             with gr.Tab("Bonds"):
                 bond_ids_state = gr.State([])

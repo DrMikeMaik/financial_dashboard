@@ -9,6 +9,7 @@ class AssetType(str, Enum):
     CRYPTO = "crypto"
     STOCK = "stock"
     ETF = "etf"
+    FUND = "fund"
     BOND = "bond"
     CASH = "cash"
 
