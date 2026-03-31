@@ -614,8 +614,65 @@ def test_stock_save_helper_refreshes_dashboard_on_success():
     print("   ✓ Successful stock saves trigger the refresh path.")
 
 
+def test_fx_refresh_only_persists_used_currencies():
+    print("10. Testing FX refresh only persists used currencies...")
+    conn = fresh_db("test_mvp_fx_refresh_filter.duckdb")
+    conn.execute("""
+        INSERT INTO holdings (asset_type, symbol, name, currency)
+        VALUES
+            ('stock', 'BMW', 'BMW AG', 'EUR'),
+            ('crypto', 'BTC', 'Bitcoin', 'USD')
+    """)
+    conn.execute("""
+        INSERT INTO accounts (name, type, currency, balance, active)
+        VALUES
+            ('GBP Cash', 'checking', 'GBP', 100, TRUE),
+            ('PLN Cash', 'checking', 'PLN', 50, TRUE)
+    """)
+    conn.commit()
+    conn.close()
+
+    original_get_rates = dashboard_service.fx_nbp.get_current_rates
+    original_crypto_prices = dashboard_service.crypto_coingecko.get_current_prices
+    original_stock_price = dashboard_service.stocks_yfinance.get_current_price
+
+    dashboard_service.fx_nbp.get_current_rates = lambda quote_currency="PLN": {
+        "PLN": Decimal("1.0"),
+        "EUR": Decimal("4.20"),
+        "USD": Decimal("4.00"),
+        "GBP": Decimal("5.10"),
+        "JPY": Decimal("0.025"),
+    }
+    dashboard_service.crypto_coingecko.get_current_prices = lambda symbols, vs_currency="usd": {
+        "BTC": Decimal("30000"),
+    }
+    dashboard_service.stocks_yfinance.get_current_price = lambda symbol: Decimal("120")
+
+    try:
+        status = dashboard_service.refresh_market_data()
+        assert "✓ Updated 3 FX rates from NBP" in status
+    finally:
+        dashboard_service.fx_nbp.get_current_rates = original_get_rates
+        dashboard_service.crypto_coingecko.get_current_prices = original_crypto_prices
+        dashboard_service.stocks_yfinance.get_current_price = original_stock_price
+
+    verify_conn = duckdb.connect("data/test_mvp_fx_refresh_filter.duckdb")
+    saved_currencies = {
+        row[0]
+        for row in verify_conn.execute("""
+            SELECT DISTINCT base_ccy
+            FROM fx_rates
+            WHERE source = 'NBP'
+            ORDER BY base_ccy
+        """).fetchall()
+    }
+    assert saved_currencies == {"EUR", "GBP", "USD"}
+    verify_conn.close()
+    print("   ✓ FX cache keeps only currencies actually used by the portfolio.")
+
+
 def test_schema_migration_adds_stock_ledger_columns():
-    print("10. Testing schema migration for stock ledger columns...")
+    print("11. Testing schema migration for stock ledger columns...")
     db_path = Path("data") / "test_mvp_schema_migration.duckdb"
     if db_path.exists():
         db_path.unlink()
@@ -660,7 +717,7 @@ def test_schema_migration_adds_stock_ledger_columns():
 
 
 def test_dashboard_payload_smoke():
-    print("11. Testing dashboard payload smoke...")
+    print("12. Testing dashboard payload smoke...")
     conn = fresh_db("test_mvp_dashboard.duckdb")
     conn.close()
 
@@ -683,6 +740,7 @@ def main():
     test_stock_ledger_rows_and_fifo_fee_conversion()
     test_stock_ledger_fetches_and_caches_historical_fx_once()
     test_stock_save_helper_refreshes_dashboard_on_success()
+    test_fx_refresh_only_persists_used_currencies()
     test_schema_migration_adds_stock_ledger_columns()
     test_dashboard_payload_smoke()
     print("\n" + "=" * 50)
