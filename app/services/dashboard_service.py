@@ -13,6 +13,12 @@ from app.services.crypto_ledger_service import get_crypto_orders_df
 from app.services.stock_ledger_service import get_stock_orders_df
 
 
+def _format_cache_timestamp(value: datetime | None) -> str:
+    if value is None:
+        return "n/a"
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _collect_relevant_fx_currencies(conn, holdings: list[tuple[int, str, str, str, str | None]]) -> set[str]:
     currencies = {
         (currency or "").strip().upper()
@@ -211,17 +217,19 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
         warnings_md = "\n".join(f"- {warning}" for warning in summary["warnings"])
         warnings_md = f"\n### Warnings\n{warnings_md}\n"
 
-    latest_price_ts = summary["latest_price_ts"] or "n/a"
-    latest_fx_ts = summary["latest_fx_ts"] or "n/a"
+    latest_price_ts = _format_cache_timestamp(summary["latest_price_ts"])
+    latest_fx_ts = _format_cache_timestamp(summary["latest_fx_ts"])
 
     summary_text = f"""
 ## Portfolio Summary
 
 **Net Worth:** {net_worth:,.2f} PLN
+
 **Holdings Value:** {summary['holdings_value']:,.2f} PLN
+
 **Bonds:** {bonds_total:,.2f} PLN
+
 **Cash:** {summary['cash']:,.2f} PLN
-**Unrealized P/L:** {summary['unrealized_pl']:,.2f} PLN
 
 ### Cache Status
 - **Latest price cache:** {latest_price_ts}

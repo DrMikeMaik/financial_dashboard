@@ -882,6 +882,42 @@ def test_dashboard_payload_smoke():
     print("   ✓ Dashboard payload stays stable for the UI.")
 
 
+def test_overview_summary_markdown_is_readable():
+    print("15. Testing overview summary markdown formatting and cache timestamps...")
+    conn = fresh_db("test_mvp_overview_markdown.duckdb")
+    conn.execute("""
+        INSERT INTO holdings (asset_type, symbol, name, currency)
+        VALUES ('crypto', 'BTC', 'Bitcoin', 'PLN')
+    """)
+    holding_id = conn.execute("SELECT id FROM holdings WHERE symbol = 'BTC'").fetchone()[0]
+    conn.execute("""
+        INSERT INTO transactions (holding_id, ts, action, qty, price, fee, fee_currency)
+        VALUES (?, '2026-03-31 10:00:00', 'buy', 1, 100000, 500, 'PLN')
+    """, [holding_id])
+    conn.execute("""
+        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
+        VALUES (?, '2026-03-31 13:38:21.775253', 120000, 'PLN', 'test')
+    """, [holding_id])
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES ('2026-03-31 13:38:21.522473', 'USD', 'PLN', 4.0, 'test')
+    """)
+    conn.commit()
+    conn.close()
+
+    summary_md, positions_df = dashboard_service.get_overview_data()
+    assert "**Net Worth:** 120,000.00 PLN" in summary_md
+    assert "\n\n**Holdings Value:** 120,000.00 PLN" in summary_md
+    assert "\n\n**Bonds:** 0.00 PLN" in summary_md
+    assert "\n\n**Cash:** 0.00 PLN" in summary_md
+    assert "Unrealized P/L" not in summary_md
+    assert "UPL =" not in summary_md
+    assert "2026-03-31 13:38:21" in summary_md
+    assert "13:38:21.775253" not in summary_md
+    assert not positions_df.empty
+    print("   ✓ Overview summary is multiline and trims cache timestamps.")
+
+
 def main():
     print("Testing MVP regressions\n")
     print("=" * 50)
@@ -899,6 +935,7 @@ def main():
     test_fx_refresh_only_persists_used_currencies()
     test_schema_migration_adds_stock_ledger_columns()
     test_dashboard_payload_smoke()
+    test_overview_summary_markdown_is_readable()
     print("\n" + "=" * 50)
     print("✓ MVP regression test complete\n")
 
