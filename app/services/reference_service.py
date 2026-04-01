@@ -77,3 +77,17 @@ def list_bond_choices() -> list[str]:
     finally:
         conn.close()
 
+
+def list_fund_choices() -> list[str]:
+    """List active funds as dropdown labels."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT id, name, currency
+            FROM funds
+            WHERE active = TRUE
+            ORDER BY name, id
+        """).fetchall()
+        return [f"{row[0]} | {row[1]} | {row[2]}" for row in rows]
+    finally:
+        conn.close()

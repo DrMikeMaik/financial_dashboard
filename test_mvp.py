@@ -11,7 +11,7 @@ from app.core import portfolio as portfolio_core
 from app.core.bonds import parse_series_code
 from app.core.db import init_db
 from app.core.portfolio import calculate_positions, get_portfolio_summary
-from app.services import account_service, bond_service, crypto_ledger_service, dashboard_service, holding_service, reference_service, stock_ledger_service, transaction_service
+from app.services import account_service, bond_service, crypto_ledger_service, dashboard_service, fund_service, holding_service, reference_service, stock_ledger_service, transaction_service
 
 
 SERVICE_MODULES = [
@@ -19,6 +19,7 @@ SERVICE_MODULES = [
     bond_service,
     crypto_ledger_service,
     dashboard_service,
+    fund_service,
     holding_service,
     reference_service,
     stock_ledger_service,
@@ -909,15 +910,93 @@ def test_dashboard_payload_smoke():
     conn.close()
 
     payload = dashboard_service.get_dashboard_payload(25)
-    assert len(payload) == 12
+    assert len(payload) == 14
     assert isinstance(payload[0], str)
     assert payload[4] == []
-    assert payload[10] == []
+    assert payload[8] == []
+    assert payload[12] == []
     print("   ✓ Dashboard payload stays stable for the UI.")
 
 
+def test_funds_manual_growth_bucket():
+    print("16. Testing manual funds ledger and overview integration...")
+    conn = fresh_db("test_mvp_funds.duckdb")
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES ('2026-03-31 10:00:00', 'USD', 'PLN', 4.0, 'test')
+    """)
+    conn.commit()
+    conn.close()
+
+    result = fund_service.save_fund(
+        None,
+        "My PLN Fund",
+        "PLN",
+        datetime(2026, 1, 15),
+        100,
+        200,
+        650,
+        datetime(2026, 3, 20),
+    )
+    assert result.startswith("✓")
+
+    funds_df, fund_ids = fund_service.get_funds_df()
+    assert len(fund_ids) == 1
+    assert funds_df.iloc[0]["Contributions"] == "500.00"
+    assert funds_df.iloc[0]["Current Value"] == "650.00"
+    assert funds_df.iloc[0]["P/L"] == "150.00"
+    assert funds_df.iloc[0]["P/L %"] == "30.00%"
+
+    overview_rows = fund_service.get_fund_overview_rows()
+    assert len(overview_rows) == 1
+    assert overview_rows[0]["Price Source"] == "fund_snapshot"
+    assert overview_rows[0]["Value (PLN)"] == "650.00"
+    assert overview_rows[0]["UPL"] == "150.00"
+    assert fund_service.get_funds_total() == Decimal("650")
+
+    result = fund_service.save_fund(
+        f"{fund_ids[0]} | My PLN Fund | PLN",
+        "My PLN Fund",
+        "PLN",
+        datetime(2026, 1, 15),
+        100,
+        200,
+        700,
+        datetime(2026, 4, 1),
+    )
+    assert result.startswith("✓")
+    funds_df, _ = fund_service.get_funds_df()
+    assert funds_df.iloc[0]["Contributions"] == "500.00"
+    assert funds_df.iloc[0]["P/L"] == "200.00"
+
+    usd_result = fund_service.save_fund(
+        None,
+        "USD Fund",
+        "USD",
+        datetime(2026, 2, 28),
+        50,
+        0,
+        180,
+        datetime(2026, 4, 1),
+    )
+    assert usd_result.startswith("✓")
+    assert fund_service.get_funds_total() == Decimal("1420")
+
+    summary_md, positions_df = dashboard_service.get_overview_data()
+    assert "**Funds:** 1,420.00 PLN" in summary_md
+    assert "My PLN Fund" in positions_df["Symbol"].tolist()
+    assert "USD Fund" in positions_df["Symbol"].tolist()
+
+    delete_result = fund_service.delete_fund_by_id(fund_ids[0])
+    assert delete_result.startswith("✓")
+    funds_df, remaining_ids = fund_service.get_funds_df()
+    assert len(remaining_ids) == 1
+    assert funds_df.iloc[0]["Fund"] == "USD Fund"
+    print("   ✓ Funds manual growth bucket works correctly.")
+
+
 def test_overview_summary_markdown_is_readable():
-    print("16. Testing overview summary markdown formatting and cache timestamps...")
+    print("17. Testing overview summary markdown formatting and cache timestamps...")
     conn = fresh_db("test_mvp_overview_markdown.duckdb")
     conn.execute("""
         INSERT INTO holdings (asset_type, symbol, name, currency)
@@ -953,7 +1032,7 @@ def test_overview_summary_markdown_is_readable():
 
 
 def test_overview_positions_table_is_pln_only():
-    print("17. Testing overview positions table formatting...")
+    print("18. Testing overview positions table formatting...")
     conn = fresh_db("test_mvp_overview_positions.duckdb")
     conn.execute("""
         INSERT INTO holdings (asset_type, symbol, name, currency)
@@ -1057,6 +1136,7 @@ def main():
     test_fx_refresh_only_persists_used_currencies()
     test_schema_migration_adds_stock_ledger_columns()
     test_dashboard_payload_smoke()
+    test_funds_manual_growth_bucket()
     test_overview_summary_markdown_is_readable()
     test_overview_positions_table_is_pln_only()
     print("\n" + "=" * 50)

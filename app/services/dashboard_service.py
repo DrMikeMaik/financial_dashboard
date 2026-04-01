@@ -10,6 +10,7 @@ from app.core.portfolio import calculate_positions, get_portfolio_summary
 from app.services.account_service import get_account_overview_rows, get_accounts_df
 from app.services import bond_service
 from app.services.bond_service import get_bonds_df
+from app.services.fund_service import get_fund_overview_rows, get_funds_df, get_funds_total
 from app.services.crypto_ledger_service import get_crypto_orders_df
 from app.services.stock_ledger_service import get_stock_orders_df
 
@@ -33,6 +34,16 @@ def _collect_relevant_fx_currencies(conn, holdings: list[tuple[int, str, str, st
         WHERE active = TRUE
     """).fetchall()
     for (currency,) in account_rows:
+        normalized = (currency or "").strip().upper()
+        if normalized and normalized != "PLN":
+            currencies.add(normalized)
+
+    fund_rows = conn.execute("""
+        SELECT DISTINCT currency
+        FROM funds
+        WHERE active = TRUE
+    """).fetchall()
+    for (currency,) in fund_rows:
         normalized = (currency or "").strip().upper()
         if normalized and normalized != "PLN":
             currencies.add(normalized)
@@ -152,10 +163,12 @@ def _positions_to_dataframe(asset_types: set[str] | None = None) -> pd.DataFrame
 
     include_bonds = asset_types is None or "bond" in asset_types
     include_accounts = asset_types is None or "cash" in asset_types
+    include_funds = asset_types is None or "fund" in asset_types
     bond_rows = bond_service.get_bond_overview_rows() if include_bonds else []
     account_rows = get_account_overview_rows() if include_accounts else []
+    fund_rows = get_fund_overview_rows() if include_funds else []
 
-    if not positions and not bond_rows and not account_rows:
+    if not positions and not bond_rows and not account_rows and not fund_rows:
         return pd.DataFrame(columns=["Asset Type", "Symbol", "Quantity", "Avg Cost (PLN)", "Current Price (PLN)", "Value (PLN)", "UPL", "Price Source"])
 
     positions.sort(key=lambda position: position.value_pln, reverse=True)
@@ -173,7 +186,7 @@ def _positions_to_dataframe(asset_types: set[str] | None = None) -> pd.DataFrame
         for position in positions
     ]
 
-    rows = position_rows + bond_rows + account_rows
+    rows = position_rows + bond_rows + fund_rows + account_rows
     rows.sort(
         key=lambda row: Decimal(str(row["Value (PLN)"]).replace(",", "")),
         reverse=True,
@@ -236,7 +249,8 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
         conn.close()
 
     bonds_total = bond_service.get_bonds_total()
-    net_worth = summary['net_worth'] + bonds_total
+    funds_total = get_funds_total()
+    net_worth = summary['net_worth'] + bonds_total + funds_total
 
     warnings_md = ""
     if summary["warnings"]:
@@ -252,6 +266,8 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
 **Net Worth:** {net_worth:,.2f} PLN
 
 **Holdings Value:** {summary['holdings_value']:,.2f} PLN
+
+**Funds:** {funds_total:,.2f} PLN
 
 **Bonds:** {bonds_total:,.2f} PLN
 
@@ -271,6 +287,7 @@ def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "")
     overview_md, positions_df = get_overview_data()
     crypto_orders_df, crypto_order_ids = get_crypto_orders_df()
     stock_orders_df, stock_order_ids = get_stock_orders_df()
+    funds_dataframe, fund_ids = get_funds_df()
     bonds_dataframe, bonds_ids = get_bonds_df()
     accounts_dataframe, account_ids = get_accounts_df()
     return (
@@ -281,6 +298,8 @@ def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "")
         crypto_order_ids,
         stock_orders_df,
         stock_order_ids,
+        funds_dataframe,
+        fund_ids,
         bonds_dataframe,
         bonds_ids,
         accounts_dataframe,
