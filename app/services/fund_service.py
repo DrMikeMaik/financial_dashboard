@@ -22,6 +22,7 @@ class FundSnapshot:
     contributions_total: Decimal
     current_value_pln: Decimal | None
     profit_pln: Decimal | None
+    profit_pct: Decimal | None
 
 
 def _parse_fund_choice(fund_choice: str | None) -> int | None:
@@ -96,6 +97,9 @@ def _build_snapshot(row, conn) -> FundSnapshot:
 
     current_value_pln = current_dec
     profit_pln = current_dec - contributions_total if current_dec is not None else None
+    profit_pct = None
+    if profit_pln is not None and contributions_total != 0:
+        profit_pct = profit_pln / contributions_total
 
     return FundSnapshot(
         id=fund_id,
@@ -109,6 +113,7 @@ def _build_snapshot(row, conn) -> FundSnapshot:
         contributions_total=contributions_total,
         current_value_pln=current_value_pln,
         profit_pln=profit_pln,
+        profit_pct=profit_pct,
     )
 
 
@@ -129,7 +134,7 @@ def list_fund_choices() -> list[str]:
 
 def get_funds_df() -> tuple[pd.DataFrame, list[int]]:
     """Get all active funds as a display table."""
-    cols = ["Fund", "Paid In", "Current Value", "P/L", "Updated", "Delete"]
+    cols = ["Fund", "Paid In", "Current Value", "P/L", "Change %", "Updated", "Delete"]
     conn = get_connection()
     try:
         rows = conn.execute("""
@@ -152,6 +157,7 @@ def get_funds_df() -> tuple[pd.DataFrame, list[int]]:
                 "Paid In": f"{snapshot.contributions_total:,.2f}",
                 "Current Value": f"{snapshot.current_value:,.2f}" if snapshot.current_value is not None else "",
                 "P/L": f"{snapshot.profit_pln:,.2f}" if snapshot.profit_pln is not None else "",
+                "Change %": f"{snapshot.profit_pct * Decimal('100'):,.2f}%" if snapshot.profit_pct is not None else "",
                 "Updated": str(snapshot.current_value_date) if snapshot.current_value_date else "",
                 "Delete": "🗑️",
             })

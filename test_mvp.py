@@ -941,10 +941,11 @@ def test_funds_manual_growth_bucket():
 
     funds_df, fund_ids = fund_service.get_funds_df()
     assert len(fund_ids) == 1
-    assert list(funds_df.columns) == ["Fund", "Paid In", "Current Value", "P/L", "Updated", "Delete"]
+    assert list(funds_df.columns) == ["Fund", "Paid In", "Current Value", "P/L", "Change %", "Updated", "Delete"]
     assert funds_df.iloc[0]["Paid In"] == "500.00"
     assert funds_df.iloc[0]["Current Value"] == "650.00"
     assert funds_df.iloc[0]["P/L"] == "150.00"
+    assert funds_df.iloc[0]["Change %"] == "30.00%"
 
     overview_rows = fund_service.get_fund_overview_rows()
     assert len(overview_rows) == 1
@@ -966,6 +967,7 @@ def test_funds_manual_growth_bucket():
     funds_df, _ = fund_service.get_funds_df()
     assert funds_df.iloc[0]["Paid In"] == "500.00"
     assert funds_df.iloc[0]["P/L"] == "200.00"
+    assert funds_df.iloc[0]["Change %"] == "40.00%"
     assert fund_service.get_funds_total() == Decimal("700")
 
     summary_md, positions_df = dashboard_service.get_overview_data()

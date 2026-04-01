@@ -413,7 +413,7 @@ def create_ui():
                     label="Funds",
                     wrap=True,
                     line_breaks=True,
-                    datatype=["str", "str", "str", "str", "str", "str"],
+                    datatype=["str", "str", "str", "str", "str", "str", "str"],
                 )
 
                 gr.Markdown("### Fund Editor")
