@@ -83,11 +83,11 @@ def list_fund_choices() -> list[str]:
     conn = get_connection()
     try:
         rows = conn.execute("""
-            SELECT id, name, currency
+            SELECT id, name
             FROM funds
             WHERE active = TRUE
             ORDER BY name, id
         """).fetchall()
-        return [f"{row[0]} | {row[1]} | {row[2]}" for row in rows]
+        return [f"{row[0]} | {row[1]}" for row in rows]
     finally:
         conn.close()

@@ -38,16 +38,6 @@ def _collect_relevant_fx_currencies(conn, holdings: list[tuple[int, str, str, st
         if normalized and normalized != "PLN":
             currencies.add(normalized)
 
-    fund_rows = conn.execute("""
-        SELECT DISTINCT currency
-        FROM funds
-        WHERE active = TRUE
-    """).fetchall()
-    for (currency,) in fund_rows:
-        normalized = (currency or "").strip().upper()
-        if normalized and normalized != "PLN":
-            currencies.add(normalized)
-
     fee_rows = conn.execute("""
         SELECT DISTINCT fee_currency
         FROM transactions

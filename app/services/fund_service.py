@@ -7,14 +7,12 @@ from decimal import Decimal
 import pandas as pd
 
 from app.core.db import get_connection
-from app.core.portfolio import get_fx_rate_info
 
 
 @dataclass
 class FundSnapshot:
     id: int
     name: str
-    currency: str
     start_date: date
     monthly_contribution: Decimal
     starting_amount: Decimal
@@ -23,9 +21,7 @@ class FundSnapshot:
     contributions_count: int
     contributions_total: Decimal
     current_value_pln: Decimal | None
-    profit_native: Decimal | None
     profit_pln: Decimal | None
-    profit_pct: Decimal | None
 
 
 def _parse_fund_choice(fund_choice: str | None) -> int | None:
@@ -98,20 +94,12 @@ def _build_snapshot(row, conn) -> FundSnapshot:
     contributions_count = _count_monthly_contributions(start_date, value_date)
     contributions_total = starting_dec + monthly_dec * Decimal(contributions_count)
 
-    fx_rate, _, _, _ = get_fx_rate_info(conn, currency, "PLN")
-    current_value_pln = current_dec * fx_rate if current_dec is not None else None
-    contributions_total_pln = contributions_total * fx_rate
-    profit_native = current_dec - contributions_total if current_dec is not None else None
-    profit_pln = current_value_pln - contributions_total_pln if current_value_pln is not None else None
-
-    profit_pct = None
-    if profit_native is not None and contributions_total != 0:
-        profit_pct = profit_native / contributions_total
+    current_value_pln = current_dec
+    profit_pln = current_dec - contributions_total if current_dec is not None else None
 
     return FundSnapshot(
         id=fund_id,
         name=name,
-        currency=currency,
         start_date=start_date,
         monthly_contribution=monthly_dec,
         starting_amount=starting_dec,
@@ -120,9 +108,7 @@ def _build_snapshot(row, conn) -> FundSnapshot:
         contributions_count=contributions_count,
         contributions_total=contributions_total,
         current_value_pln=current_value_pln,
-        profit_native=profit_native,
         profit_pln=profit_pln,
-        profit_pct=profit_pct,
     )
 
 
@@ -131,19 +117,19 @@ def list_fund_choices() -> list[str]:
     conn = get_connection()
     try:
         rows = conn.execute("""
-            SELECT id, name, currency
+            SELECT id, name
             FROM funds
             WHERE active = TRUE
             ORDER BY name, id
         """).fetchall()
-        return [f"{row[0]} | {row[1]} | {row[2]}" for row in rows]
+        return [f"{row[0]} | {row[1]}" for row in rows]
     finally:
         conn.close()
 
 
 def get_funds_df() -> tuple[pd.DataFrame, list[int]]:
     """Get all active funds as a display table."""
-    cols = ["Fund", "CCY", "Start", "Monthly", "Start Amount", "Contributions", "Current Value", "P/L", "P/L %", "Updated", "Delete"]
+    cols = ["Fund", "Paid In", "Current Value", "P/L", "Updated", "Delete"]
     conn = get_connection()
     try:
         rows = conn.execute("""
@@ -163,14 +149,9 @@ def get_funds_df() -> tuple[pd.DataFrame, list[int]]:
             fund_ids.append(snapshot.id)
             data.append({
                 "Fund": snapshot.name,
-                "CCY": snapshot.currency,
-                "Start": str(snapshot.start_date),
-                "Monthly": f"{snapshot.monthly_contribution:,.2f}",
-                "Start Amount": f"{snapshot.starting_amount:,.2f}",
-                "Contributions": f"{snapshot.contributions_total:,.2f}",
+                "Paid In": f"{snapshot.contributions_total:,.2f}",
                 "Current Value": f"{snapshot.current_value:,.2f}" if snapshot.current_value is not None else "",
-                "P/L": f"{snapshot.profit_native:,.2f}" if snapshot.profit_native is not None else "",
-                "P/L %": f"{snapshot.profit_pct * Decimal('100'):,.2f}%" if snapshot.profit_pct is not None else "",
+                "P/L": f"{snapshot.profit_pln:,.2f}" if snapshot.profit_pln is not None else "",
                 "Updated": str(snapshot.current_value_date) if snapshot.current_value_date else "",
                 "Delete": "🗑️",
             })
@@ -231,31 +212,30 @@ def get_funds_total() -> Decimal:
         conn.close()
 
 
-def load_fund(fund_choice: str | None) -> tuple[str, str, datetime | None, float, float, float | None, datetime | None, str]:
+def load_fund(fund_choice: str | None) -> tuple[str, datetime | None, float, float, float | None, datetime | None, str]:
     """Load a fund row into the edit form."""
     fund_id = _parse_fund_choice(fund_choice)
     if fund_id is None:
-        return "", "PLN", _to_datetime(date.today()), 0.0, 0.0, None, _to_datetime(date.today()), ""
+        return "", _to_datetime(date.today()), 0.0, 0.0, None, _to_datetime(date.today()), ""
 
     conn = get_connection()
     try:
         row = conn.execute("""
-            SELECT name, currency, start_date, monthly_contribution, starting_amount, current_value, current_value_date
+            SELECT name, start_date, monthly_contribution, starting_amount, current_value, current_value_date
             FROM funds
             WHERE id = ?
         """, [fund_id]).fetchone()
 
         if not row:
-            return "", "PLN", _to_datetime(date.today()), 0.0, 0.0, None, _to_datetime(date.today()), "✗ Fund not found."
+            return "", _to_datetime(date.today()), 0.0, 0.0, None, _to_datetime(date.today()), "✗ Fund not found."
 
         return (
             row[0],
-            row[1],
-            _to_datetime(row[2]),
+            _to_datetime(row[1]),
+            float(row[2] or 0),
             float(row[3] or 0),
-            float(row[4] or 0),
-            float(row[5]) if row[5] is not None else None,
-            _to_datetime(row[6]) or _to_datetime(date.today()),
+            float(row[4]) if row[4] is not None else None,
+            _to_datetime(row[5]) or _to_datetime(date.today()),
             f"Loaded fund #{fund_id}.",
         )
     finally:
@@ -265,7 +245,6 @@ def load_fund(fund_choice: str | None) -> tuple[str, str, datetime | None, float
 def save_fund(
     fund_choice: str | None,
     name: str,
-    currency: str,
     start_date,
     monthly_contribution,
     starting_amount,
@@ -275,8 +254,6 @@ def save_fund(
     """Create or update a manual fund bucket."""
     if not name or not name.strip():
         return "✗ Fund name is required."
-    if not currency or not currency.strip():
-        return "✗ Fund currency is required."
 
     try:
         parsed_start_date = _parse_date(start_date, "Start date")
@@ -307,7 +284,7 @@ def save_fund(
                 VALUES (nextval('seq_funds_id'), ?, ?, ?, ?, ?, ?, ?, TRUE)
             """, [
                 name.strip(),
-                currency.strip().upper(),
+                "PLN",
                 parsed_start_date,
                 monthly_dec,
                 starting_dec,
@@ -324,7 +301,7 @@ def save_fund(
             WHERE id = ?
         """, [
             name.strip(),
-            currency.strip().upper(),
+            "PLN",
             parsed_start_date,
             monthly_dec,
             starting_dec,

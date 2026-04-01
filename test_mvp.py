@@ -931,7 +931,6 @@ def test_funds_manual_growth_bucket():
     result = fund_service.save_fund(
         None,
         "My PLN Fund",
-        "PLN",
         datetime(2026, 1, 15),
         100,
         200,
@@ -942,10 +941,10 @@ def test_funds_manual_growth_bucket():
 
     funds_df, fund_ids = fund_service.get_funds_df()
     assert len(fund_ids) == 1
-    assert funds_df.iloc[0]["Contributions"] == "500.00"
+    assert list(funds_df.columns) == ["Fund", "Paid In", "Current Value", "P/L", "Updated", "Delete"]
+    assert funds_df.iloc[0]["Paid In"] == "500.00"
     assert funds_df.iloc[0]["Current Value"] == "650.00"
     assert funds_df.iloc[0]["P/L"] == "150.00"
-    assert funds_df.iloc[0]["P/L %"] == "30.00%"
 
     overview_rows = fund_service.get_fund_overview_rows()
     assert len(overview_rows) == 1
@@ -955,9 +954,8 @@ def test_funds_manual_growth_bucket():
     assert fund_service.get_funds_total() == Decimal("650")
 
     result = fund_service.save_fund(
-        f"{fund_ids[0]} | My PLN Fund | PLN",
+        f"{fund_ids[0]} | My PLN Fund",
         "My PLN Fund",
-        "PLN",
         datetime(2026, 1, 15),
         100,
         200,
@@ -966,32 +964,18 @@ def test_funds_manual_growth_bucket():
     )
     assert result.startswith("✓")
     funds_df, _ = fund_service.get_funds_df()
-    assert funds_df.iloc[0]["Contributions"] == "500.00"
+    assert funds_df.iloc[0]["Paid In"] == "500.00"
     assert funds_df.iloc[0]["P/L"] == "200.00"
-
-    usd_result = fund_service.save_fund(
-        None,
-        "USD Fund",
-        "USD",
-        datetime(2026, 2, 28),
-        50,
-        0,
-        180,
-        datetime(2026, 4, 1),
-    )
-    assert usd_result.startswith("✓")
-    assert fund_service.get_funds_total() == Decimal("1420")
+    assert fund_service.get_funds_total() == Decimal("700")
 
     summary_md, positions_df = dashboard_service.get_overview_data()
-    assert "**Funds:** 1,420.00 PLN" in summary_md
+    assert "**Funds:** 700.00 PLN" in summary_md
     assert "My PLN Fund" in positions_df["Symbol"].tolist()
-    assert "USD Fund" in positions_df["Symbol"].tolist()
 
     delete_result = fund_service.delete_fund_by_id(fund_ids[0])
     assert delete_result.startswith("✓")
     funds_df, remaining_ids = fund_service.get_funds_df()
-    assert len(remaining_ids) == 1
-    assert funds_df.iloc[0]["Fund"] == "USD Fund"
+    assert len(remaining_ids) == 0
     print("   ✓ Funds manual growth bucket works correctly.")
 
 

@@ -44,7 +44,7 @@ def _clear_account_form() -> tuple:
 
 def _clear_fund_form() -> tuple:
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    return None, "", "PLN", today, 0.0, 0.0, None, today, ""
+    return None, "", today, 0.0, 0.0, None, today, ""
 
 
 def _clear_stock_form() -> tuple:
@@ -413,7 +413,7 @@ def create_ui():
                     label="Funds",
                     wrap=True,
                     line_breaks=True,
-                    datatype=["str", "str", "str", "str", "str", "str", "str", "str", "str", "str", "str"],
+                    datatype=["str", "str", "str", "str", "str", "str"],
                 )
 
                 gr.Markdown("### Fund Editor")
@@ -425,8 +425,7 @@ def create_ui():
                 )
 
                 with gr.Row():
-                    fund_name = gr.Textbox(label="Fund Name", scale=2)
-                    fund_currency = gr.Dropdown(label="Currency", choices=CURRENCY_CHOICES, value="PLN", allow_custom_value=False, scale=1)
+                    fund_name = gr.Textbox(label="Fund Name")
 
                 with gr.Row():
                     fund_start_date = gr.DateTime(
@@ -437,7 +436,7 @@ def create_ui():
                         scale=1,
                     )
                     fund_monthly = gr.Number(label="Monthly Contribution", value=0.0, scale=1)
-                    fund_starting_amount = gr.Number(label="Starting Amount", value=0.0, scale=1)
+                    fund_starting_amount = gr.Number(label="Initial Amount", value=0.0, scale=1)
 
                 with gr.Row():
                     fund_current_value = gr.Number(label="Current Value", scale=1)
@@ -745,7 +744,6 @@ def create_ui():
             inputs=fund_select,
             outputs=[
                 fund_name,
-                fund_currency,
                 fund_start_date,
                 fund_monthly,
                 fund_starting_amount,
@@ -760,7 +758,6 @@ def create_ui():
             inputs=[
                 fund_select,
                 fund_name,
-                fund_currency,
                 fund_start_date,
                 fund_monthly,
                 fund_starting_amount,
@@ -801,7 +798,6 @@ def create_ui():
             outputs=[
                 fund_select,
                 fund_name,
-                fund_currency,
                 fund_start_date,
                 fund_monthly,
                 fund_starting_amount,
