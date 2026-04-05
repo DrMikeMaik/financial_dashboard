@@ -3,6 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 
 import pandas as pd
+from matplotlib.figure import Figure
 
 from app.adapters import crypto_coingecko, fx_nbp, stocks_yfinance
 from app.core.db import get_connection, get_setting
@@ -10,6 +11,7 @@ from app.core.portfolio import calculate_positions, get_portfolio_summary
 from app.services.account_service import get_account_overview_rows, get_accounts_df
 from app.services import bond_service
 from app.services.bond_service import get_bonds_df
+from app.services.fund_service import get_fund_overview_rows, get_funds_df, get_funds_total
 from app.services.crypto_ledger_service import get_crypto_orders_df
 from app.services.stock_ledger_service import get_stock_orders_df
 
@@ -18,6 +20,60 @@ def _format_cache_timestamp(value: datetime | None) -> str:
     if value is None:
         return "n/a"
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _build_overview_chart_figure(
+    holdings_value: Decimal,
+    funds_value: Decimal,
+    bonds_value: Decimal,
+    cash_value: Decimal,
+) -> Figure:
+    slices = [
+        ("Holdings", holdings_value, "#ff6b35"),
+        ("Funds", funds_value, "#3ddc97"),
+        ("Bonds", bonds_value, "#4ea8de"),
+        ("Cash", cash_value, "#f4d35e"),
+    ]
+    non_zero_slices = [(label, value, color) for label, value, color in slices if value > 0]
+    total = sum(value for _, value, _ in non_zero_slices)
+    figure = Figure(figsize=(6.4, 3.6), facecolor="#0b0f19")
+    axis = figure.add_subplot(111)
+    axis.set_facecolor("#0b0f19")
+
+    if total <= 0:
+        axis.text(0.5, 0.5, "No allocation data yet.", ha="center", va="center", color="#a6adbb", fontsize=13)
+        axis.axis("off")
+        figure.tight_layout()
+        return figure
+
+    labels = [label for label, _, _ in non_zero_slices]
+    values = [float(value) for _, value, _ in non_zero_slices]
+    colors = [color for _, _, color in non_zero_slices]
+    legend_labels = []
+    for label, value, _ in non_zero_slices:
+        percent = (value / total) * Decimal("100")
+        legend_labels.append(f"{label}  {value:,.2f} PLN ({percent:,.1f}%)")
+
+    wedges, _ = axis.pie(
+        values,
+        colors=colors,
+        startangle=90,
+        counterclock=False,
+        wedgeprops={"edgecolor": "#0b0f19", "linewidth": 2},
+    )
+    axis.legend(
+        wedges,
+        legend_labels,
+        loc="center left",
+        bbox_to_anchor=(1.0, 0.5),
+        frameon=False,
+        labelcolor="#f5f7fb",
+        fontsize=10,
+    )
+    axis.set_title("Allocation", color="#f5f7fb", fontsize=14, pad=14)
+    axis.axis("equal")
+    figure.tight_layout()
+    return figure
 
 
 def _collect_relevant_fx_currencies(conn, holdings: list[tuple[int, str, str, str, str | None]]) -> set[str]:
@@ -152,10 +208,12 @@ def _positions_to_dataframe(asset_types: set[str] | None = None) -> pd.DataFrame
 
     include_bonds = asset_types is None or "bond" in asset_types
     include_accounts = asset_types is None or "cash" in asset_types
+    include_funds = asset_types is None or "fund" in asset_types
     bond_rows = bond_service.get_bond_overview_rows() if include_bonds else []
     account_rows = get_account_overview_rows() if include_accounts else []
+    fund_rows = get_fund_overview_rows() if include_funds else []
 
-    if not positions and not bond_rows and not account_rows:
+    if not positions and not bond_rows and not account_rows and not fund_rows:
         return pd.DataFrame(columns=["Asset Type", "Symbol", "Quantity", "Avg Cost (PLN)", "Current Price (PLN)", "Value (PLN)", "UPL", "Price Source"])
 
     positions.sort(key=lambda position: position.value_pln, reverse=True)
@@ -173,7 +231,7 @@ def _positions_to_dataframe(asset_types: set[str] | None = None) -> pd.DataFrame
         for position in positions
     ]
 
-    rows = position_rows + bond_rows + account_rows
+    rows = position_rows + bond_rows + fund_rows + account_rows
     rows.sort(
         key=lambda row: Decimal(str(row["Value (PLN)"]).replace(",", "")),
         reverse=True,
@@ -227,7 +285,7 @@ def get_settings_markdown() -> str:
         conn.close()
 
 
-def get_overview_data() -> tuple[str, pd.DataFrame]:
+def get_overview_data() -> tuple[str, Figure, pd.DataFrame]:
     """Get overview markdown and full positions DataFrame."""
     conn = get_connection()
     try:
@@ -236,7 +294,8 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
         conn.close()
 
     bonds_total = bond_service.get_bonds_total()
-    net_worth = summary['net_worth'] + bonds_total
+    funds_total = get_funds_total()
+    net_worth = summary['net_worth'] + bonds_total + funds_total
 
     warnings_md = ""
     if summary["warnings"]:
@@ -253,6 +312,8 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
 
 **Holdings Value:** {summary['holdings_value']:,.2f} PLN
 
+**Funds:** {funds_total:,.2f} PLN
+
 **Bonds:** {bonds_total:,.2f} PLN
 
 **Cash:** {summary['cash']:,.2f} PLN
@@ -263,24 +324,29 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
 {warnings_md}
 """.strip()
 
-    return summary_text, get_all_positions_df()
+    chart_figure = _build_overview_chart_figure(summary["holdings_value"], funds_total, bonds_total, summary["cash"])
+    return summary_text, chart_figure, get_all_positions_df()
 
 
 def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "") -> tuple:
     """Return all dashboard outputs used by the top-level refresh."""
-    overview_md, positions_df = get_overview_data()
+    overview_md, overview_chart_figure, positions_df = get_overview_data()
     crypto_orders_df, crypto_order_ids = get_crypto_orders_df()
     stock_orders_df, stock_order_ids = get_stock_orders_df()
+    funds_dataframe, fund_ids = get_funds_df()
     bonds_dataframe, bonds_ids = get_bonds_df()
     accounts_dataframe, account_ids = get_accounts_df()
     return (
         refresh_status,
         overview_md,
+        overview_chart_figure,
         positions_df,
         crypto_orders_df,
         crypto_order_ids,
         stock_orders_df,
         stock_order_ids,
+        funds_dataframe,
+        fund_ids,
         bonds_dataframe,
         bonds_ids,
         accounts_dataframe,

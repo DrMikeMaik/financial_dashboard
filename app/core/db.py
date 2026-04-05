@@ -187,6 +187,25 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
         )
     """)
 
+    # Standalone funds table for manual contribution buckets.
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_funds_id START 1
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS funds (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_funds_id'),
+            name VARCHAR NOT NULL,
+            currency VARCHAR NOT NULL,
+            start_date DATE NOT NULL,
+            monthly_contribution DECIMAL(18, 8) DEFAULT 0,
+            starting_amount DECIMAL(18, 8) DEFAULT 0,
+            current_value DECIMAL(18, 8),
+            current_value_date DATE,
+            active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     # Remove dormant normalized bond schema from older local databases.
     conn.execute("DROP TABLE IF EXISTS bond_period_rates")
     conn.execute("DROP TABLE IF EXISTS bond_meta")

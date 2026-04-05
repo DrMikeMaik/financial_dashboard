@@ -8,6 +8,7 @@ from app.services import (
     bond_service,
     crypto_ledger_service,
     dashboard_service,
+    fund_service,
     reference_service,
     stock_ledger_service,
 )
@@ -31,6 +32,7 @@ def _reference_updates() -> tuple:
     return (
         gr.update(choices=reference_service.list_account_choices(), value=None),
         gr.update(choices=reference_service.list_bond_choices(), value=None),
+        gr.update(choices=reference_service.list_fund_choices(), value=None),
         gr.update(choices=crypto_ledger_service.list_crypto_order_choices(), value=None),
         gr.update(choices=stock_ledger_service.list_stock_order_choices(), value=None),
     )
@@ -38,6 +40,11 @@ def _reference_updates() -> tuple:
 
 def _clear_account_form() -> tuple:
     return None, "", None, "PLN", 0.0, ""
+
+
+def _clear_fund_form() -> tuple:
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return None, "", today, 0.0, 0.0, None, today, ""
 
 
 def _clear_stock_form() -> tuple:
@@ -273,9 +280,6 @@ def _append_bond_rate_from_choice(bond_choice: str | None, rate) -> str:
 
     return bond_service.append_bond_rate(bond_id, rate)
 
-
-
-
 def create_ui():
     """Create and configure the Gradio interface."""
     with gr.Blocks(title="Financial Dashboard") as demo:
@@ -288,7 +292,11 @@ def create_ui():
 
         with gr.Tabs():
             with gr.Tab("Overview"):
-                summary_md = gr.Markdown()
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        summary_md = gr.Markdown()
+                    with gr.Column(scale=2):
+                        overview_chart = gr.Plot()
                 positions_df = gr.DataFrame(label="All Positions")
 
             with gr.Tab("Crypto"):
@@ -404,8 +412,51 @@ def create_ui():
                 stock_output = gr.Textbox(label="Stock Result", interactive=False)
 
             with gr.Tab("Fund"):
-                gr.Markdown("### Fund")
-                gr.Markdown("Fund support is planned next. This tab is a placeholder so the pipeline is visible in the UI.")
+                fund_ids_state = gr.State([])
+                funds_df = gr.DataFrame(
+                    label="Funds",
+                    wrap=True,
+                    line_breaks=True,
+                    datatype=["str", "str", "str", "str", "str", "str", "str"],
+                )
+
+                gr.Markdown("### Fund Editor")
+                fund_select = gr.Dropdown(
+                    label="Existing Fund",
+                    choices=reference_service.list_fund_choices(),
+                    allow_custom_value=False,
+                    value=None,
+                )
+
+                with gr.Row():
+                    fund_name = gr.Textbox(label="Fund Name")
+
+                with gr.Row():
+                    fund_start_date = gr.DateTime(
+                        label="Start Date",
+                        value=datetime.now().replace(hour=0, minute=0, second=0, microsecond=0),
+                        include_time=False,
+                        type="datetime",
+                        scale=1,
+                    )
+                    fund_monthly = gr.Number(label="Monthly Contribution", value=0.0, scale=1)
+                    fund_starting_amount = gr.Number(label="Initial Amount", value=0.0, scale=1)
+
+                with gr.Row():
+                    fund_current_value = gr.Number(label="Current Value", scale=1)
+                    fund_current_value_date = gr.DateTime(
+                        label="Current Value Date",
+                        value=datetime.now().replace(hour=0, minute=0, second=0, microsecond=0),
+                        include_time=False,
+                        type="datetime",
+                        scale=1,
+                    )
+
+                with gr.Row():
+                    fund_save_btn = gr.Button("Save Fund", variant="primary")
+                    fund_clear_btn = gr.Button("Clear")
+
+                fund_output = gr.Textbox(label="Fund Result", interactive=False)
 
             with gr.Tab("Bonds"):
                 bond_ids_state = gr.State([])
@@ -470,11 +521,14 @@ def create_ui():
         dashboard_outputs = [
             refresh_output,
             summary_md,
+            overview_chart,
             positions_df,
             crypto_df,
             crypto_order_ids_state,
             stocks_df,
             stock_order_ids_state,
+            funds_df,
+            fund_ids_state,
             bonds_df,
             bond_ids_state,
             accounts_df,
@@ -485,6 +539,7 @@ def create_ui():
         refresh_reference_outputs = [
             account_select,
             bond_select,
+            fund_select,
             crypto_order_select,
             stock_order_select,
         ]
@@ -686,6 +741,74 @@ def create_ui():
                 stock_fee,
                 stock_note,
                 stock_output,
+            ],
+        )
+
+        fund_select.change(
+            fn=fund_service.load_fund,
+            inputs=fund_select,
+            outputs=[
+                fund_name,
+                fund_start_date,
+                fund_monthly,
+                fund_starting_amount,
+                fund_current_value,
+                fund_current_value_date,
+                fund_output,
+            ],
+        )
+
+        fund_save_btn.click(
+            fn=fund_service.save_fund,
+            inputs=[
+                fund_select,
+                fund_name,
+                fund_start_date,
+                fund_monthly,
+                fund_starting_amount,
+                fund_current_value,
+                fund_current_value_date,
+            ],
+            outputs=fund_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            outputs=dashboard_outputs,
+        )
+
+        def _handle_fund_table_click(evt: gr.SelectData, fund_ids):
+            if evt.value != "🗑️":
+                return gr.skip()
+            row = evt.index[0]
+            if row >= len(fund_ids):
+                return gr.skip()
+            return fund_service.delete_fund_by_id(fund_ids[row])
+
+        funds_df.select(
+            fn=_handle_fund_table_click,
+            inputs=fund_ids_state,
+            outputs=fund_output,
+        ).then(
+            fn=_reference_updates,
+            outputs=refresh_reference_outputs,
+        ).then(
+            fn=_dashboard_payload,
+            outputs=dashboard_outputs,
+        )
+
+        fund_clear_btn.click(
+            fn=_clear_fund_form,
+            outputs=[
+                fund_select,
+                fund_name,
+                fund_start_date,
+                fund_monthly,
+                fund_starting_amount,
+                fund_current_value,
+                fund_current_value_date,
+                fund_output,
             ],
         )
 
