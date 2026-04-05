@@ -178,23 +178,28 @@ def get_fund_overview_rows() -> list[dict[str, str]]:
             ORDER BY name, id
         """).fetchall()
 
-        overview_rows = []
+        total_value = Decimal("0")
+        total_profit = Decimal("0")
         for row in rows:
             snapshot = _build_snapshot(row, conn)
             if snapshot.current_value_pln is None:
                 continue
-            overview_rows.append({
-                "Asset Type": "FUND",
-                "Symbol": snapshot.name,
-                "Quantity": "",
-                "Avg Cost (PLN)": "",
-                "Current Price (PLN)": "",
-                "Value (PLN)": f"{snapshot.current_value_pln:,.2f}",
-                "UPL": f"{(snapshot.profit_pln or Decimal('0')):,.2f}",
-                "Price Source": "fund_snapshot",
-            })
+            total_value += snapshot.current_value_pln
+            total_profit += snapshot.profit_pln or Decimal("0")
 
-        return overview_rows
+        if total_value == 0:
+            return []
+
+        return [{
+            "Asset Type": "FUND",
+            "Symbol": "Funds",
+            "Quantity": "",
+            "Avg Cost (PLN)": "",
+            "Current Price (PLN)": "",
+            "Value (PLN)": f"{total_value:,.2f}",
+            "UPL": f"{total_profit:,.2f}",
+            "Price Source": "fund_snapshot",
+        }]
     finally:
         conn.close()
 
