@@ -3,6 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 
 import pandas as pd
+from matplotlib.figure import Figure
 
 from app.adapters import crypto_coingecko, fx_nbp, stocks_yfinance
 from app.core.db import get_connection, get_setting
@@ -19,6 +20,60 @@ def _format_cache_timestamp(value: datetime | None) -> str:
     if value is None:
         return "n/a"
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _build_overview_chart_figure(
+    holdings_value: Decimal,
+    funds_value: Decimal,
+    bonds_value: Decimal,
+    cash_value: Decimal,
+) -> Figure:
+    slices = [
+        ("Holdings", holdings_value, "#ff6b35"),
+        ("Funds", funds_value, "#3ddc97"),
+        ("Bonds", bonds_value, "#4ea8de"),
+        ("Cash", cash_value, "#f4d35e"),
+    ]
+    non_zero_slices = [(label, value, color) for label, value, color in slices if value > 0]
+    total = sum(value for _, value, _ in non_zero_slices)
+    figure = Figure(figsize=(6.4, 3.6), facecolor="#0b0f19")
+    axis = figure.add_subplot(111)
+    axis.set_facecolor("#0b0f19")
+
+    if total <= 0:
+        axis.text(0.5, 0.5, "No allocation data yet.", ha="center", va="center", color="#a6adbb", fontsize=13)
+        axis.axis("off")
+        figure.tight_layout()
+        return figure
+
+    labels = [label for label, _, _ in non_zero_slices]
+    values = [float(value) for _, value, _ in non_zero_slices]
+    colors = [color for _, _, color in non_zero_slices]
+    legend_labels = []
+    for label, value, _ in non_zero_slices:
+        percent = (value / total) * Decimal("100")
+        legend_labels.append(f"{label}  {value:,.2f} PLN ({percent:,.1f}%)")
+
+    wedges, _ = axis.pie(
+        values,
+        colors=colors,
+        startangle=90,
+        counterclock=False,
+        wedgeprops={"edgecolor": "#0b0f19", "linewidth": 2},
+    )
+    axis.legend(
+        wedges,
+        legend_labels,
+        loc="center left",
+        bbox_to_anchor=(1.0, 0.5),
+        frameon=False,
+        labelcolor="#f5f7fb",
+        fontsize=10,
+    )
+    axis.set_title("Allocation", color="#f5f7fb", fontsize=14, pad=14)
+    axis.axis("equal")
+    figure.tight_layout()
+    return figure
 
 
 def _collect_relevant_fx_currencies(conn, holdings: list[tuple[int, str, str, str, str | None]]) -> set[str]:
@@ -230,7 +285,7 @@ def get_settings_markdown() -> str:
         conn.close()
 
 
-def get_overview_data() -> tuple[str, pd.DataFrame]:
+def get_overview_data() -> tuple[str, Figure, pd.DataFrame]:
     """Get overview markdown and full positions DataFrame."""
     conn = get_connection()
     try:
@@ -269,12 +324,13 @@ def get_overview_data() -> tuple[str, pd.DataFrame]:
 {warnings_md}
 """.strip()
 
-    return summary_text, get_all_positions_df()
+    chart_figure = _build_overview_chart_figure(summary["holdings_value"], funds_total, bonds_total, summary["cash"])
+    return summary_text, chart_figure, get_all_positions_df()
 
 
 def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "") -> tuple:
     """Return all dashboard outputs used by the top-level refresh."""
-    overview_md, positions_df = get_overview_data()
+    overview_md, overview_chart_figure, positions_df = get_overview_data()
     crypto_orders_df, crypto_order_ids = get_crypto_orders_df()
     stock_orders_df, stock_order_ids = get_stock_orders_df()
     funds_dataframe, fund_ids = get_funds_df()
@@ -283,6 +339,7 @@ def get_dashboard_payload(transaction_limit: int = 50, refresh_status: str = "")
     return (
         refresh_status,
         overview_md,
+        overview_chart_figure,
         positions_df,
         crypto_orders_df,
         crypto_order_ids,

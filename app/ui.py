@@ -292,7 +292,11 @@ def create_ui():
 
         with gr.Tabs():
             with gr.Tab("Overview"):
-                summary_md = gr.Markdown()
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        summary_md = gr.Markdown()
+                    with gr.Column(scale=2):
+                        overview_chart = gr.Plot()
                 positions_df = gr.DataFrame(label="All Positions")
 
             with gr.Tab("Crypto"):
@@ -517,6 +521,7 @@ def create_ui():
         dashboard_outputs = [
             refresh_output,
             summary_md,
+            overview_chart,
             positions_df,
             crypto_df,
             crypto_order_ids_state,
