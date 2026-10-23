@@ -337,6 +337,8 @@ def save_crypto_order(
         if fee_dec < 0:
             return "✗ Fee / spread must be zero or greater."
 
+        # Roll back holding creation/metadata changes if order validation fails.
+        conn.execute("BEGIN TRANSACTION")
         holding_id = _get_or_create_crypto_holding_from_result(conn, selected_result)
         candidate = {
             "id": transaction_id if transaction_id is not None else 10**12,

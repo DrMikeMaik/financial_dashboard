@@ -2,6 +2,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import duckdb
 from matplotlib.figure import Figure
@@ -170,6 +171,104 @@ def test_transaction_crud_and_oversell_protection():
 
     conn.close()
     print("   ✓ CRUD and oversell protections behave as expected.")
+
+
+def test_order_edits_preserve_both_ledgers():
+    print("Testing asset-changing edits, missing orders, and rejected-save rollback...")
+    for editor in ("transaction", "crypto", "stock"):
+        conn = fresh_db(f"test_mvp_{editor}_edit_validation.duckdb")
+        asset_type = "stock" if editor == "stock" else "crypto"
+        conn.execute("""
+            INSERT INTO holdings (asset_type, symbol, name, currency)
+            VALUES (?, 'AAA', 'Original', 'PLN')
+        """, [asset_type])
+        holding_id = conn.execute("SELECT id FROM holdings").fetchone()[0]
+        buy_id = conn.execute("""
+            INSERT INTO transactions (holding_id, ts, action, qty, price)
+            VALUES (?, '2025-01-01', 'buy', 10, 100) RETURNING id
+        """, [holding_id]).fetchone()[0]
+        sell_id = conn.execute("""
+            INSERT INTO transactions (holding_id, ts, action, qty, price)
+            VALUES (?, '2025-02-01', 'sell', 5, 120) RETURNING id
+        """, [holding_id]).fetchone()[0]
+        if editor == "transaction":
+            conn.execute("""
+                INSERT INTO holdings (asset_type, symbol, name, currency)
+                VALUES ('crypto', 'BBB', 'Destination', 'PLN')
+            """)
+        before_holdings = conn.execute("SELECT * FROM holdings ORDER BY id").fetchall()
+        before_transactions = conn.execute("SELECT * FROM transactions ORDER BY id").fetchall()
+
+        def save(order_id, symbol="BBB", action="buy"):
+            choice = str(order_id) if order_id is not None else None
+            if editor == "transaction":
+                return transaction_service.save_transaction(
+                    choice, "2025-01-01", symbol, None, action, 10, 100
+                )
+            result = {
+                "symbol": symbol, "name": "Changed metadata", "currency": "PLN",
+                "id": "test-coin", "type": "STOCK", "exchange_label": "Test PLN", "label": symbol,
+            }
+            service = stock_ledger_service if editor == "stock" else crypto_ledger_service
+            save_order = service.save_stock_order if editor == "stock" else service.save_crypto_order
+            return save_order(choice, symbol, [result], "2025-01-01", action, 10, 100)
+
+        assert "original holding" in save(buy_id), editor
+        assert "not found" in save(999999), editor
+        assert "exceed available quantity" in save(None, action="sell"), editor
+        assert "exceed available quantity" in save(None, symbol="AAA", action="sell"), editor
+        assert conn.execute("SELECT * FROM holdings ORDER BY id").fetchall() == before_holdings
+        assert conn.execute("SELECT * FROM transactions ORDER BY id").fetchall() == before_transactions
+
+        # Reassigning a buy is valid once its dependent sale is removed.
+        conn.execute("DELETE FROM transactions WHERE id = ?", [sell_id])
+        result = save(buy_id)
+        assert result.startswith("✓"), result
+        assert conn.execute("""
+            SELECT h.symbol FROM transactions t JOIN holdings h ON h.id = t.holding_id
+            WHERE t.id = ?
+        """, [buy_id]).fetchone()[0] == "BBB"
+        conn.close()
+    print("   ✓ All three editors protect both holdings and leave rejected saves unchanged.")
+
+
+def test_partial_refresh_reports_missing_updates():
+    print("Testing partial refresh warnings and cached-value preservation...")
+    conn = fresh_db("test_mvp_partial_refresh.duckdb")
+    conn.execute("""
+        INSERT INTO holdings (asset_type, symbol, currency, coingecko_id)
+        VALUES ('crypto', 'BTC', 'PLN', 'bitcoin'), ('crypto', 'ETH', 'PLN', NULL)
+    """)
+    conn.execute("""
+        INSERT INTO accounts (name, type, currency, balance)
+        VALUES ('Euro cash', 'checking', 'EUR', 100)
+    """)
+    conn.execute("""
+        INSERT INTO prices (holding_id, ts, price, price_ccy, source)
+        SELECT id, '2025-01-01', 2000, 'USD', 'test' FROM holdings WHERE symbol = 'ETH'
+    """)
+    conn.execute("""
+        INSERT INTO fx_rates (ts, base_ccy, quote_ccy, rate, source)
+        VALUES ('2025-01-01', 'EUR', 'PLN', 4.2, 'test')
+    """)
+    with (
+        patch.object(dashboard_service.fx_nbp, "get_current_rates", return_value={"USD": Decimal("4")}),
+        patch.object(crypto_coingecko, "get_current_prices_by_ids", return_value={"bitcoin": Decimal("30000")}),
+        patch.object(crypto_coingecko, "get_current_prices", return_value={}),
+    ):
+        status = dashboard_service.refresh_market_data()
+    assert "Updated 1 FX rates" in status
+    assert "Missing FX updates for: EUR/PLN" in status
+    assert "Updated 1 crypto prices" in status
+    assert "Missing crypto price updates for: ETH" in status
+    assert conn.execute("SELECT rate, source FROM fx_rates WHERE base_ccy = 'EUR'").fetchall() == [(Decimal("4.2"), "test")]
+    assert conn.execute("""
+        SELECT p.price, p.source FROM prices p JOIN holdings h ON h.id = p.holding_id
+        WHERE h.symbol = 'ETH'
+    """).fetchall() == [(Decimal("2000"), "test")]
+    assert conn.execute("SELECT COUNT(*) FROM prices WHERE source = 'CoinGecko'").fetchone()[0] == 1
+    conn.close()
+    print("   ✓ Partial refresh identifies missing updates and retains cached values.")
 
 
 def test_bonds_simple_ledger():
@@ -1135,6 +1234,8 @@ def main():
     test_price_currency_and_cash_summary()
     test_accounts_table_is_pln_first_and_totaled()
     test_transaction_crud_and_oversell_protection()
+    test_order_edits_preserve_both_ledgers()
+    test_partial_refresh_reports_missing_updates()
     test_bonds_simple_ledger()
     test_bond_rate_schedule_valuation()
     test_stock_search_adapter_and_ui_resolution()

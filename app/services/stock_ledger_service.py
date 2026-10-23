@@ -374,6 +374,8 @@ def save_stock_order(
 
     conn = get_connection()
     try:
+        # Roll back holding creation/metadata changes if order validation fails.
+        conn.execute("BEGIN TRANSACTION")
         holding_id = _get_or_create_stock_holding_from_result(conn, selected_result)
         candidate = {
             "id": transaction_id if transaction_id is not None else 10**12,

@@ -75,6 +75,17 @@ def _validate_action_fields(action: str, qty: Decimal | None, price: Decimal | N
 
 
 def _validate_no_oversell(conn, holding_id: int, candidate: dict | None = None, skip_txn_id: int | None = None) -> str | None:
+    if candidate is not None and skip_txn_id is not None:
+        original = conn.execute(
+            "SELECT holding_id FROM transactions WHERE id = ?", [skip_txn_id]
+        ).fetchone()
+        if original is None:
+            return "✗ Transaction not found."
+        if original[0] != holding_id:
+            original_error = _validate_no_oversell(conn, original[0], skip_txn_id=skip_txn_id)
+            if original_error:
+                return "✗ Moving this transaction would make a later sell invalid for the original holding."
+
     txns = conn.execute("""
         SELECT id, ts, action, qty
         FROM transactions

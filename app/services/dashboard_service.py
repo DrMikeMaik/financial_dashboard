@@ -129,9 +129,11 @@ def refresh_market_data() -> str:
                 fx_rates = fx_nbp.get_current_rates("PLN")
                 now = datetime.now()
                 updated_fx = 0
+                missing_fx = []
                 for currency in sorted(relevant_fx_currencies):
                     rate = fx_rates.get(currency)
                     if rate is None:
+                        missing_fx.append(f"{currency}/PLN")
                         continue
                     conn.execute("""
                         INSERT INTO fx_rates (id, ts, base_ccy, quote_ccy, rate, source)
@@ -139,6 +141,8 @@ def refresh_market_data() -> str:
                     """, [now, currency, float(rate)])
                     updated_fx += 1
                 messages.append(f"✓ Updated {updated_fx} FX rates from NBP")
+                if missing_fx:
+                    messages.append(f"⚠ Missing FX updates for: {', '.join(missing_fx)}. Existing cached rates retained where available.")
             except Exception as exc:
                 messages.append(f"⚠ FX rates update failed: {exc}")
 
@@ -155,9 +159,11 @@ def refresh_market_data() -> str:
                 legacy_prices = crypto_coingecko.get_current_prices(legacy_symbols, vs_currency="usd")
                 now = datetime.now()
                 updated = 0
+                missing_crypto = []
                 for holding_id, symbol, coingecko_id in crypto_holdings:
                     price = prices_by_id.get(coingecko_id) if coingecko_id else legacy_prices.get(symbol.upper())
                     if price is None:
+                        missing_crypto.append(symbol)
                         continue
                     conn.execute("""
                         INSERT INTO prices (id, holding_id, ts, price, price_ccy, source)
@@ -165,6 +171,8 @@ def refresh_market_data() -> str:
                     """, [holding_id, now, float(price)])
                     updated += 1
                 messages.append(f"✓ Updated {updated} crypto prices from CoinGecko")
+                if missing_crypto:
+                    messages.append(f"⚠ Missing crypto price updates for: {', '.join(missing_crypto)}. Existing cached prices retained where available.")
             except Exception as exc:
                 messages.append(f"⚠ Crypto price update failed: {exc}")
 
